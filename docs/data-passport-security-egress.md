@@ -1,20 +1,24 @@
 # Data Passport — Egress Gate (Endpoint Security)
 
-> Status: Interception mechanism (§5) still **PROPOSED, not confirmed**. Policy configuration model (§3) and interception/extraction mechanics (§4) reflect team decisions made 2026-08-07 — see `decisions-log.md`.
+> Status: Interception mechanism (§5) still **PROPOSED, not confirmed**. Policy configuration model (§3) and interception/extraction mechanics (§4) reflect team decisions made 2026-08-07 — see `decisions-log.md`. Updated 2026-08-07: what this doc originally called the "Ingestion Gate" (a separate, server-side checkpoint) has been merged into this one — PII detection/redaction happens in exactly one place, the endpoint device, for every outbound flow.
 
 ## 1. What this is and why it exists
 
-The architecture already has one checkpoint: the **Ingestion Gate** (Bronze → Silver), which redacts PII before session content becomes shared org knowledge. That protects data flowing *into* the passport system.
+PII/credential detection and redaction happens in exactly one place: **the endpoint device**, before anything leaves it. One shared on-device engine is invoked for two different outbound flows, each with its own destination policy:
 
-This doc covers a second, earlier checkpoint: the **Egress Gate**, which sits at the user's endpoint device and inspects content *before it leaves toward any AI service at all* — regardless of whether that content was ever going to touch the Data Passport pipeline. This is the other half of the project's thesis: not just "make knowledge travel," but "stop the data that shouldn't travel, at the earliest possible point."
+1. **Toward Data Passport's own ingest API** — always redact, no exceptions. Covered in `data-passport-architecture.md` § The Endpoint Checkpoint. This protects the org's own knowledge base from ever holding raw PII, even internally — no server-side scan, no exemption for "it's our own infrastructure."
+2. **Toward any external AI** — the Egress Gate proper, the rest of this doc: destination-based policy (§2), which does distinguish local/on-prem from external SaaS. (Same "one shared engine, many callers" idea as §5 Option D below — extended here to cover the ingest flow too, not just the AI-egress interception channels.)
 
-Two gates, two directions:
+This is the other half of the project's thesis: not just "make knowledge travel," but "stop the data that shouldn't travel, at the earliest possible point" — which turned out to be the same point for both flows.
 
-| | Ingestion Gate | Egress Gate |
+One engine, two flows:
+
+| | Toward Data Passport (ingest) | Toward external AI (egress) |
 |---|---|---|
-| Location | Server-side, Bronze→Silver | Endpoint device, before any outbound AI call |
+| Location | Endpoint device, before `POST /v1/ingest` | Endpoint device, before any outbound AI call |
 | Protects | The shared knowledge base | The organization's data leaving to external AI |
 | Trigger | A session gets captured into the passport | A user/agent sends a prompt to any AI, anywhere |
+| Destination policy | Always redact — no exemptions, since this is a persistent store shared broadly across the org | Default-deny by destination — local/on-prem LLM exempt, external SaaS redacted/blocked (§2) |
 
 ## 2. Policy: what gets blocked, and where
 
@@ -103,5 +107,5 @@ Build the policy engine (Option D's shared service, including the §3 config mod
 1. Block vs. redact-and-continue — which content categories get which treatment? (Security/product call, not engineering.)
 2. Is a full-traffic-intercepting proxy acceptable on team members' devices for the hackathon, or does that need IT/security sign-off first?
 3. Where does the "known confidential document" corpus for fingerprinting come from, and who maintains it — in scope for the hackathon, or a "future work" slide?
-4. How does this interact with the Ingestion Gate — does Egress Gate activity ever get logged into the same audit trail (`redaction_audit_log`), so there's one unified "what did we stop" view for the demo?
+4. ~~How does this interact with the Ingestion Gate — does Egress Gate activity ever get logged into the same audit trail?~~ — resolved by construction: there's only one on-device engine now (§1), so ingest-bound and AI-bound redactions both report into the same `redaction_audit_log` via the same `sensitivity_flags` metadata mechanism.
 5. Concrete admin-floor list — which destinations/categories are actually mandatory on day one? Not yet defined, just the mechanism for defining them.

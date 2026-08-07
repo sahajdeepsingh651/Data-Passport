@@ -2,9 +2,9 @@
 
 ## 1. The idea in one line
 
-Knowledge that should move across the org doesn't. Data that shouldn't move (PII, credentials, customer data) does. **Data Passport fixes both at once**, using a data lakehouse where the layer boundaries themselves act as passport control.
+Knowledge that should move across the org doesn't. Data that shouldn't move (PII, credentials, customer data) does. **Data Passport fixes both at once**: a single on-device checkpoint strips PII/credentials before anything leaves the endpoint — whether it's headed to our own knowledge base or to an external AI — and a data lakehouse structures and serves whatever's left.
 
-> Updated 2026-08-07 with ideas adopted from researching Glean's architecture — see `glean-research.md` for full findings and what we chose not to copy.
+> Updated 2026-08-07 with ideas adopted from researching Glean's architecture — see `glean-research.md` for full findings and what we chose not to copy. Updated again 2026-08-07: PII/credential detection & redaction moved fully to the endpoint device — see § The Endpoint Checkpoint and `decisions-log.md`.
 
 ## 2. Background: warehouse vs. lake vs. lakehouse
 
@@ -16,26 +16,36 @@ Knowledge that should move across the org doesn't. Data that shouldn't move (PII
 
 We're using the **lakehouse / medallion pattern**, lightly implemented, because the layer transitions map directly onto the "passport" metaphor.
 
-## 3. The three layers
+## 3. The layers
+
+### The Endpoint Checkpoint — where passport control actually happens
+
+Before Bronze, before anything leaves the device at all: a single on-device detection & redaction engine inspects outbound content and strips PII/credentials — regardless of destination. This is the real passport-control moment; everything downstream (Bronze/Gate/Silver/Gold) operates on already-clean content.
+
+- **One shared engine, two outbound flows** — the same on-device library is invoked whether content is headed toward Data Passport's own ingest API (always redact, no exceptions) or toward an external AI (destination-based policy, `data-passport-security-egress.md` §2). This doc previously described these as separate checkpoints (a server-side "Ingestion Gate" and an endpoint-side "Egress Gate"); they've since been unified — see `decisions-log.md`.
+- Detection: regex + pattern matching for secrets (API keys, tokens, connection strings — gitleaks-style patterns) and PII (emails, phone numbers, names, customer IDs — regex plus a lightweight NER pass, e.g. Presidio).
+- Redaction: flagged spans are stripped or replaced with placeholders (`[REDACTED_EMAIL]`) before the request ever leaves the device — never silently deleted, since the fact that something was caught is itself useful signal.
+- What actually reaches the server is metadata only, never the raw flagged values: `sensitivity_flags` (`contains_pii`, `contains_credentials`, `redaction_applied`, `redaction_count`) travels with the redacted content so the central audit trail can be populated without the central system ever seeing what was caught.
+- **Team decision (2026-08-07): no server-side PII scanning, by design.** The central system trusts the endpoint's redaction completely and never independently re-scans incoming content. This keeps the privacy claim structurally true — "we never receive it, so we can't leak it, not even to our own admins" — rather than merely policy-enforced. Accepted trade-off: there is no central backstop if an endpoint's detection has a bug, is an outdated version, or is bypassed. Not hidden — see `decisions-log.md`.
+- Build ownership: this engine lives inside whatever endpoint-side software the team eventually builds (browser extension / network proxy / IDE plugin — still undecided, see `data-passport-security-egress.md` §4–5). It is explicitly **not** part of the core service being built first (`data-passport-core-service.md`).
 
 ### Bronze — Raw / Unfiltered
 
 - Everything lands here exactly as captured: agent conversation logs, meeting notes, Slack/doc exports, decision write-ups, code review comments — whatever a team or an AI agent produces.
-- Schema-on-read: no validation, no redaction, no structure enforced. This is intentional — capture must be zero-friction or people/agents won't feed it.
-- **This layer still contains PII and credentials.** It has NOT crossed passport control yet.
+- Schema-on-read: no structure enforced, no domain validation. This is intentional — capture must be low-friction or people/agents won't feed it.
+- **PII and credentials are NOT present here.** Passport control for sensitive data already happened at the endpoint (above) before this content ever left the device — Bronze is "raw" only in the sense of unstructured and unvalidated, never in the sense of containing sensitive data.
 - Storage: a folder structure or MinIO (S3-compatible object storage) bucket on the VM, partitioned by date/team/source, e.g. `bronze/{team}/{source}/{yyyy-mm-dd}/{id}.json`.
 
-### The Gate — Bronze → Silver (Passport Control)
+### The Gate — Bronze → Silver (Structuring & Validation)
 
-This is the literal checkpoint. Nothing reaches Silver without passing through it.
+Nothing reaches Silver without passing through it — but PII/credential detection is no longer this checkpoint's job; that already happened at the endpoint, above.
 
-1. **PII / credential detection** — regex + pattern matching for secrets (API keys, tokens, connection strings — gitleaks-style patterns) and PII (emails, phone numbers, names, customer IDs — regex plus a lightweight NER pass, e.g. Presidio).
-2. **Redaction / tokenization** — flagged spans are stripped or replaced with placeholders (`[REDACTED_EMAIL]`), not silently deleted — the fact that something was caught is itself useful signal.
-3. **Provenance tagging** — every record is stamped with team, author, agent/session ID, source system, and timestamp before moving on.
-4. **Audit logging** — every catch (what was flagged, what rule matched, which record) is written to a `redaction_audit_log`. This is your demo evidence: "here's what tried to cross the border and didn't."
-5. **Structuring / extraction** — raw text is turned into a knowledge record: title, summary, tags, team, links to source.
+1. **Provenance tagging** — every record is stamped with team, author, agent/session ID, source system, and timestamp.
+2. **`domain_data` type validation** — reject with a clear error on a type mismatch against the domain's declared schema (`data-passport-schema.md` §4.0).
+3. **Structuring / extraction** — the (already-redacted) text is turned into a knowledge record: title, summary, tags, team, links to source.
+4. **Audit logging** — the endpoint's reported `sensitivity_flags` metadata (what was flagged and how much, never the actual values) plus any validation failures are written to `redaction_audit_log`. Still your demo evidence — "here's what tried to cross the border and didn't" — just sourced from endpoint-reported metadata instead of a central scan.
 
-Anything that fails the gate is quarantined (stays in Bronze, flagged) rather than blocked silently — someone can review and override.
+Anything that fails validation is quarantined (stays in Bronze, flagged) rather than rejected silently — someone can review and override.
 
 ### Silver — Cleaned, Structured, Safe
 
@@ -78,15 +88,18 @@ A lightweight web dashboard reads the same Gold tables to visualize: live agent 
 ## 5. End-to-end flow
 
 ```
-Team / AI Agent
+Team / AI Agent (endpoint device)
       │  (raw capture: conversation, doc, decision, code note)
       ▼
- BRONZE  (object storage / folders — raw, unfiltered, still contains PII)
+ ENDPOINT CHECKPOINT  (detect PII/secrets → redact — nothing leaves the device unclean)
       │
       ▼
- THE GATE  (PII/secret detection → redact → tag provenance → audit log)
+ BRONZE  (object storage / folders — unstructured, but already PII-free)
       │
-      ├──► quarantined (failed/flagged, held for review)
+      ▼
+ THE GATE  (validate domain_data types → tag provenance → structure/extract → audit log from endpoint-reported flags)
+      │
+      ├──► quarantined (failed validation, held for review)
       │
       ▼
  SILVER  (Postgres — clean, structured, provenance-tagged knowledge records)
@@ -111,11 +124,11 @@ Because with a 4-person team on a hackathon clock, that infrastructure is pure s
 
 ## 7. Suggested team split (4 people)
 
-1. **Bronze + Gate (ingestion & redaction)** — build the raw capture format, PII/secret detection rules, redaction logic, audit logging.
-2. **Silver + Gold (data model & search)** — Postgres schema, pgvector embeddings, dedup logic, aggregation views.
-3. **MCP server** — expose the tools (`search_knowledge`, `record_insight`, `announce_task`, `get_agent_activity`, `handoff`) so any connected AI agent can use the passport.
-4. **Dashboard / demo UI** — knowledge search view, live agent activity feed, and the redaction audit log view (the visual "proof" of the theme).
+1. **Endpoint Checkpoint (detection & redaction)** — build the on-device PII/secret detection engine and redaction logic; shared by both the ingest-bound flow and the Egress Gate's AI-bound flow (`data-passport-security-egress.md`).
+2. **Bronze + Gate (ingestion, validation, structuring)** — raw capture format, `domain_data` type validation, provenance tagging, structuring/extraction, audit logging from endpoint-reported metadata.
+3. **Silver + Gold (data model & search)** — Postgres schema, pgvector embeddings, dedup logic, aggregation views.
+4. **MCP server + Dashboard** — expose the tools (`search_knowledge`, `record_insight`, `announce_task`, `get_agent_activity`, `handoff`) and build the demo UI: knowledge search view, live agent activity feed, and the redaction audit log view (the visual "proof" of the theme).
 
 ## 8. What to say to judges, in one breath
 
-"We built the passport control checkpoint directly into our data architecture. Raw knowledge lands freely in Bronze. Nothing reaches the layer that teams and AI agents actually search and build on — Silver and Gold — without clearing the Gate, where PII and credentials get caught and logged. The result: knowledge travels freely across teams and AI agents, and the things that shouldn't travel, don't."
+"We built passport control at the earliest possible point: the device itself. PII and credentials are stripped before anything ever leaves the endpoint — whether it's headed to our own knowledge base or to an external AI — so our servers never receive, store, or even see raw sensitive data in the first place. What does travel lands in Bronze clean, gets structured and validated at the Gate, and becomes searchable in Silver and Gold. The result: knowledge travels freely across teams and AI agents, and the things that shouldn't travel, never even leave the building."

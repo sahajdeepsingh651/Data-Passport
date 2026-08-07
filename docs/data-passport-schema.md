@@ -13,7 +13,7 @@ A record has three parts:
 - **B. Core content** — the semantic payload that actually travels (required, universal)
 - **C. Extension** — domain-specific structured data (optional, namespaced per department)
 
-This schema is populated at the **Bronze → Silver** step (see `data-passport-architecture.md`): an extractor reads the raw session transcript (post-Gate, PII/secrets already redacted) and fills in A + B + C.
+This schema is populated at the **Bronze → Silver** step (see `data-passport-architecture.md`): an extractor reads the session transcript — already redacted at the endpoint before it ever reached Bronze, see `data-passport-architecture.md` § The Endpoint Checkpoint — and fills in A + B + C.
 
 ## 2. Full schema
 
@@ -35,7 +35,7 @@ This schema is populated at the **Bronze → Silver** step (see `data-passport-a
 | `visibility` | enum | `private` \| `team` \| `department` \| `org` — who/what can query it downstream |
 | `consent_basis` | enum | `admin_mandated` \| `user_opted_in` — why this record exists at all. Set at the moment `record_insight` is called: automatically for admin-mandated categories, or by the employee's own choice otherwise. See `data-passport-architecture.md` § Consent model |
 | `consent_actor` | object `{type, id}` | `type` = `policy_rule` (with the rule id) if `admin_mandated`, or `type` = `user` (with the employee's id) if `user_opted_in` — audit trail for who/what caused this session to be linked to the passport |
-| `sensitivity_flags` | object | `{contains_pii: bool, contains_credentials: bool, redaction_applied: bool, redaction_count: int}` — populated by the Gate |
+| `sensitivity_flags` | object | `{contains_pii: bool, contains_credentials: bool, redaction_applied: bool, redaction_count: int}` — populated by the endpoint's detection engine before transmission and passed through at ingest; the central Gate does not independently verify these (zero server-side PII scanning, by design — see `decisions-log.md`) |
 | `status` | enum | `in_progress` \| `completed` \| `blocked` \| `handed_off` \| `abandoned` |
 | `links` | array of `{type, target_id}` | `type` ∈ `continues_from`, `supersedes`, `related_to`, `contradicts`, `blocked_by` |
 
