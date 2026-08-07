@@ -19,7 +19,7 @@ The statement bundles several distinct problems:
 | C | Two teams make contradictory decisions and don't find out until collision | **No** — deferred, real feature but needs cross-team comparison logic beyond hackathon time |
 | D | Nobody can see what anyone else's AI agent is working on | **Yes** — shared agent activity ledger |
 | E | No agent can pick up where another left off | **Yes** — handoff mechanism, same underlying data as D |
-| F | PII/credentials/customer data leak out through AI prompts unmonitored | **Yes** — two-sided: Ingestion Gate (into the shared knowledge base) + Egress Gate (out to external AI) |
+| F | PII/credentials/customer data leak out through AI prompts unmonitored | **Yes** — one on-device checkpoint, two destinations: always-redact toward the shared knowledge base, destination-based policy toward external AI |
 
 ## 3. The angle we chose
 
@@ -33,7 +33,7 @@ C (contradiction detection) is a real, valid extension of the same theme but was
 |---|---|
 | A, B — knowledge capture & search | `data-passport-architecture.md` (Bronze/Gate/Silver/Gold), `data-passport-schema.md` (what gets extracted from a session) |
 | D, E — agent visibility & handoff | `data-passport-architecture.md` §4 (MCP tools: `announce_task`, `get_agent_activity`, `handoff`) |
-| F — PII/confidential data control | `data-passport-architecture.md` (Ingestion Gate), `data-passport-security-egress.md` (Egress Gate, endpoint-level) |
+| F — PII/confidential data control | `data-passport-architecture.md` § The Endpoint Checkpoint (ingest-bound redaction), `data-passport-security-egress.md` (AI-bound Egress Gate policy) |
 | Competitive/SOTA grounding | `glean-research.md` |
 | Full reasoning trail for every choice above | `decisions-log.md` |
 

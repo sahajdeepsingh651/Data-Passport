@@ -29,9 +29,9 @@ One engine, two flows:
 **Default-deny, not a blocklist.** Maintain an allowlist of known-safe destinations (internal LLM gateway, localhost, approved internal domains). Anything not on the allowlist is treated as external and subject to redaction/blocking. A blocklist of "known AI SaaS domains" would require constant updating as new AI products launch; default-deny doesn't have that maintenance burden.
 
 **Content categories to detect:**
-1. **PII** — same detection approach as the Ingestion Gate (regex + NER: emails, phone numbers, names, customer IDs).
+1. **PII** — regex + NER: emails, phone numbers, names, customer IDs. Same on-device detection engine used for the ingest-bound flow (§1) — not a separate implementation.
 2. **Credentials/secrets** — API keys, tokens, connection strings (gitleaks-style pattern matching).
-3. **Confidential business data** (new category, not covered by the Ingestion Gate today):
+3. **Confidential business data** (checked only for this AI-bound flow — content bound for Data Passport's own ingest API doesn't need this check; internal confidential business knowledge, gated by `visibility`, is exactly what the knowledge base is for):
    - Literal prices / currency figures in text (regex: currency symbols, "$X,XXX", "quote of", "margin of X%").
    - Financial and pricing documents — keyword/heuristic matching ("price list," "quote," "P&L," "confidential — pricing") as a first pass.
    - Optional, higher-precision: document fingerprinting — hash known confidential documents once (e.g., the actual price list, financial statements) and flag near-exact matches later. Catches copy-pasted content that keyword matching would miss, at the cost of needing a maintained corpus of fingerprinted docs.
@@ -47,7 +47,7 @@ Decided 2026-08-07: neither "the system silently checks everything" nor "the emp
 
 This keeps the "foolproof" property for whatever the org decides is non-negotiable, while giving employees real say (and reducing the "my employer silently wiretaps my whole device" objection) everywhere the org hasn't drawn a hard line.
 
-The same two-tier shape governs the **third, separate decision** of which sessions get linked into the shared knowledge lakehouse at all (not an Egress Gate concern — that's the Ingestion Gate's consent model, see `data-passport-architecture.md` § Consent model). Same pattern, different gate: admin-mandated categories auto-capture, everything else requires the employee's own opt-in action.
+The same two-tier shape governs the **third, separate decision** of which sessions get linked into the shared knowledge lakehouse at all (not an Egress Gate concern — that's Data Passport's own consent model, see `data-passport-architecture.md` § Consent model). Same pattern, different checkpoint: admin-mandated categories auto-capture, everything else requires the employee's own opt-in action.
 
 ## 4. Interception & extraction mechanics — how this actually works
 
