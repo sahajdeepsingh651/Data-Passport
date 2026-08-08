@@ -1,0 +1,101 @@
+--- Decision record 1 (subject: job queue technology) ---
+The engineering team evaluated the job queue technology for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 
+
+--- Decision record 2 (subject: session storage) ---
+The engineering team evaluated the session storage for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 
+
+--- Decision record 3 (subject: search indexing) ---
+The engineering team evaluated the search indexing for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 
+
+--- Decision record 4 (subject: file upload pipeline) ---
+The engineering team evaluated the file upload pipeline for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 
+
+--- Decision record 5 (subject: rate limiting strategy) ---
+The engineering team evaluated the rate limiting strategy for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 
+
+--- Decision record 6 (subject: job queue technology) ---
+The engineering team evaluated the job queue technology for the notification
+service and decided to use PostgreSQL LISTEN/NOTIFY instead of Redis. The
+alternative considered was Redis Streams, which was rejected because the
+persistence cost of running a dedicated Redis cluster with AOF durability
+exceeded the value of its lower latency for this workload. The team also
+considered RabbitMQ, rejected because it added an operational dependency
+the platform did not already carry. This decision applies to the
+notification, webhook-retry, and audit-log write paths, all of which share
+the same durability requirements. It does not apply to the real-time
+presence system, which has a different latency budget and remains on
+Redis pub/sub. The decision was reviewed by the platform team and is
+considered stable as of this quarter; any team building a new queue-backed
+service should default to Postgres LISTEN/NOTIFY unless throughput
+requirements exceed roughly five thousand messages per second, at which
+point Kafka should be evaluated instead. 

@@ -1,0 +1,13 @@
+{
+  "model": "claude-sonnet-5",
+  "max_tokens": 1,
+  "messages": [
+    {
+      "role": "user",
+      "content": "quota"
+    }
+  ],
+  "metadata": {
+    "user_id": "{\"device_id\":\"d875b9fa7a311fbb9cbc7188bd8499fd6598117e1a7a9d57b99935cf81cb2f9d\",\"account_uuid\":\"42bfe041-7129-4bd4-bdf6-faa4aca299ba\",\"session_id\":\"5aee7613-1d3c-4052-b7f2-92520e4fad33\"}"
+  }
+}
