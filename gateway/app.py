@@ -53,6 +53,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .policies import check as check_policy
+from .policies import pii as pii_policy
 from .policies import read as read_policy
 from .policies import write as write_policy
 from .protocol.detect import detect
@@ -222,8 +223,15 @@ async def proxy(path: str, request: Request):
 
     # CHECK — scans every request unconditionally (§5: "inspect every
     # request"). vault is empty (and everything downstream a no-op) unless
-    # the one test pattern in check.py actually matches.
+    # a pattern actually matches. check.py proves the mechanism with one
+    # test pattern; pii.py is the first real detector suite on top of it
+    # (regex + JSON-field-aware, see its module docstring). Disjoint token
+    # prefixes (SECRET_ vs PII_) mean the two vaults merge with no
+    # collisions, and restore()/StreamRestorer downstream are already
+    # generic over any token -> value vault, so nothing else changes.
     nr, vault = check_policy.scan(nr)
+    nr, pii_vault = pii_policy.scan(nr)
+    vault.update(pii_vault)
 
     # READ
     inject_on = os.environ.get("DP_INJECT", "0") == "1"

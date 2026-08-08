@@ -1,0 +1,308 @@
+"""PII policy: the Day-2 DLP detector suite ARCHITECTURE.md §5 and check.py's
+own docstring say hasn't been built yet. check.py exists to prove the
+tokenize/restore MECHANISM with one deliberately fake, low-risk pattern
+(`sk-test-...`); this module is the first real detector suite on top of
+that mechanism.
+
+Real PII shows up in agentic traffic in two distinct shapes, and a detector
+that only covers one is missing the more dangerous half:
+
+  1. A human's sentence ("my name is X, my email is Y") — free text, no
+     structure to lean on. Regex only.
+  2. A tool_result's serialized record (an onboarding lookup, a CRM read,
+     ...) — structured JSON where fields like `address` or `full_name`
+     have no reliable regex shape at all, but the FIELD NAME says it's
+     sensitive regardless of what the value looks like.
+
+Shape 2 is exactly the gap check.py has today: its scan() only walks
+blocks with `type == "text"` at the top level of a message, so a
+`tool_result` block's nested `content` is never inspected — a value
+returned from a tool call sails through untouched. This module walks into
+tool_result content explicitly (see _redact_blocks below).
+
+Fill-back reuses check.py's restore() / StreamRestorer as-is — both are
+already generic over any token -> value vault, regardless of what
+produced it, so nothing new was needed for the response side. See
+gateway/app.py for where the two policies' vaults get merged.
+
+Phone numbers use `phonenumbers` (Google's libphonenumber port, `pip
+install phonenumbers`) instead of a hand-rolled regex: it's pure Python,
+fully offline (no network, no model download — safe for the stub-based
+test flow), and actually validates rather than pattern-matches, so it
+catches a bare Indian mobile number with no `+91` prefix (a hand-rolled
+regex anchored on "91" would miss that) while rejecting digit runs that
+merely look phone-shaped. Everything else here stays regex — there's no
+equivalent well-maintained library for PAN/Aadhaar, and none of the
+alternatives for email/names clear the "actually better, doesn't block the
+flow" bar (see PII-PROGRAM.md for the specific tradeoffs considered,
+including why NER for names was deferred rather than adopted).
+
+Checksum validators (Verhoeff/Aadhaar, Luhn/card, PAN holder-type digit,
+GSTIN mod-36) are adapted from a teammate's separate "Data Passport"
+submission — pure-stdlib math, no new dependency, no LLM, no NER, none of
+that submission's gazetteer/semantic/risk-scoring/policy-engine machinery.
+This module's job is narrower than that one (redact-before-send,
+restore-after-receive for a live proxy, not classify-and-score-and-decide
+for an offline scanner), and the explicit ask was to keep the connector
+lightweight — no model calls of any kind in this path. See
+PII-CAPABILITIES.md for what got adopted, what didn't, and why.
+
+A checksum gate changes free-text matching, deliberately: an
+Aadhaar/PAN/GSTIN/card-shaped run of characters in prose only gets
+redacted if it also passes its checksum, trading a little recall (a
+synthetic or malformed number in free text won't match) for a lot of
+precision (a random 12-digit order ID won't get redacted as if it were an
+Aadhaar). This gate does NOT apply to the JSON-field-name pass below —
+`"aadhaar_number": "<anything>"` is redacted on the field name alone,
+checksum-valid or not, which is why a fixture's demo/fake ID under a
+real field name still redacts correctly.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+import phonenumbers
+
+from ..protocol.normalized import NormalizedMessage, NormalizedRequest
+
+TOKEN_PREFIX = "PII"
+_PHONE_REGION = "IN"
+
+# --- checksum validators (adapted from the teammate's deterministic.py) ----
+
+_VERHOEFF_D = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
+    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
+    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+_VERHOEFF_P = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 5, 7, 2),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
+    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
+    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+
+
+def _aadhaar_valid(raw: str) -> bool:
+    """UIDAI uses the Verhoeff checksum for the Aadhaar check digit."""
+    digits = re.sub(r"\s", "", raw)
+    if len(digits) != 12 or not digits.isdigit():
+        return False
+    if digits[0] in "01":            # UIDAI never issues numbers starting 0/1
+        return False
+    if len(set(digits)) <= 2:        # 111111111111, 121212121212 -> test data
+        return False
+    c = 0
+    for i, ch in enumerate(reversed(digits)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[i % 8][int(ch)]]
+    return c == 0
+
+
+def _luhn_ok(raw: str) -> bool:
+    digits = re.sub(r"[ -]", "", raw)
+    if not digits.isdigit():
+        return False
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = int(ch)
+        if alt:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+        alt = not alt
+    return total % 10 == 0
+
+
+_PAN_ENTITY_TYPES = set("ABCFGHLJPTKE")  # 4th character encodes PAN holder type
+
+
+def _pan_valid(raw: str) -> bool:
+    return raw.upper()[3] in _PAN_ENTITY_TYPES
+
+
+_GST_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _gstin_valid(raw: str) -> bool:
+    v = raw.upper()
+    total = 0
+    for i, ch in enumerate(v[:14]):
+        idx = _GST_CHARS.index(ch)
+        prod = idx * (2 if i % 2 else 1)
+        total += prod // 36 + prod % 36
+    return _GST_CHARS[(36 - total % 36) % 36] == v[14]
+
+
+# Free-text regex detectors. Test-grade and deliberately narrow/anchored —
+# not a real NER model — matching check.py's own stated scope for this
+# layer of the project. Phone numbers are handled separately via
+# `phonenumbers` (see module docstring), not by a pattern here. Each entry
+# is (pattern, validator); validator is None for patterns with no checksum
+# to run (a candidate with a validator only counts if it passes).
+_PATTERNS: tuple[tuple[re.Pattern, object], ...] = (
+    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), None),                                      # email
+    (re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b"), _pan_valid),                                       # PAN
+    (re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b"), _gstin_valid),                # GSTIN
+    (re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b"), None),                                           # IFSC (no checksum exists)
+    (re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)"), _luhn_ok),                                # card (13-19 digits)
+    (re.compile(r"\b\d{4}\s\d{4}\s\d{4}\b"), _aadhaar_valid),                                   # Aadhaar
+    (re.compile(r"\b\d{4}-\d{2}-\d{2}\b"), None),                                              # ISO date / DOB
+    (re.compile(r"(?:[Mm]y name is|[Ii] am|[Ii]'m)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)"), None),  # self-introduced name
+)
+
+# Field names redacted wholesale from any embedded JSON object, regardless
+# of the value's shape. This is the only way to catch `address` /
+# `full_name` — no generic pattern exists for either.
+_SENSITIVE_JSON_FIELDS = {
+    "full_name", "name", "dob", "pan_number", "aadhaar_number",
+    "bank_account", "address", "phone", "email", "emergency_contact",
+}
+
+
+def _mint_token(value: str, vault: dict, value_to_token: dict) -> str:
+    """Same value -> same token, always. `value_to_token` is the dedup
+    ledger for one scan() call; `vault` is the token -> value map callers
+    get back. (check.py's own sk-test- detector does NOT dedupe this way —
+    see known issue #1 in QA-FINDINGS.md. This module deliberately does.)
+    """
+    token = value_to_token.get(value)
+    if token is None:
+        token = f"⟦{TOKEN_PREFIX}_{len(vault) + 1}⟧"
+        vault[token] = value
+        value_to_token[value] = token
+    return token
+
+
+def _apply_patterns(text: str, vault: dict, value_to_token: dict) -> str:
+    """Find every pattern match across the whole text first, then mint
+    tokens in left-to-right document order. Doing this pattern-by-pattern
+    with sequential .sub() calls would number tokens in *pattern* order
+    instead of *appearance* order (e.g. email before an earlier name) —
+    wrong whenever a text block mixes entity types, which real messages
+    routinely do.
+    """
+    candidates = []
+    for pattern, validator in _PATTERNS:
+        for m in pattern.finditer(text):
+            if m.lastindex:
+                start, end, value = m.start(1), m.end(1), m.group(1)
+            else:
+                start, end, value = m.start(0), m.end(0), m.group(0)
+            if validator is not None and not validator(value):
+                continue
+            candidates.append((start, end, value))
+
+    for m in phonenumbers.PhoneNumberMatcher(text, _PHONE_REGION):
+        candidates.append((m.start, m.end, m.raw_string))
+
+    candidates.sort(key=lambda c: c[0])
+    accepted = []
+    cursor = -1
+    for start, end, value in candidates:
+        if start >= cursor:
+            accepted.append((start, end, value))
+            cursor = end
+    if not accepted:
+        return text
+
+    out = []
+    pos = 0
+    for start, end, value in accepted:
+        out.append(text[pos:start])
+        out.append(_mint_token(value, vault, value_to_token))
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _redact_json_value(obj, vault: dict, value_to_token: dict):
+    if isinstance(obj, dict):
+        return {
+            k: (_mint_token(v, vault, value_to_token)
+                if k in _SENSITIVE_JSON_FIELDS and isinstance(v, str)
+                else _redact_json_value(v, vault, value_to_token))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_redact_json_value(v, vault, value_to_token) for v in obj]
+    return obj
+
+
+def _redact_text(text: str, vault: dict, value_to_token: dict) -> str:
+    """A text block is either a human's sentence (regex only) or an
+    embedded JSON record (field-aware redaction first, then regex as a
+    defensive second pass over whatever the field list didn't cover)."""
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        text = json.dumps(_redact_json_value(parsed, vault, value_to_token), indent=2)
+    return _apply_patterns(text, vault, value_to_token)
+
+
+def _redact_blocks(blocks: list[dict], vault: dict, value_to_token: dict) -> list[dict]:
+    out = []
+    for block in blocks:
+        block = dict(block)
+        if block.get("type") == "text" and "text" in block:
+            block["text"] = _redact_text(block["text"], vault, value_to_token)
+        elif "content" in block:
+            # tool_result (and anything else shaped like it): the nested
+            # content is where a tool call's returned record lives — the
+            # gap check.py's scan() has today (see module docstring).
+            nested = block["content"]
+            if isinstance(nested, str):
+                block["content"] = _redact_text(nested, vault, value_to_token)
+            elif isinstance(nested, list):
+                block["content"] = _redact_blocks(nested, vault, value_to_token)
+        out.append(block)
+    return out
+
+
+def scan(nr: NormalizedRequest) -> tuple[NormalizedRequest, dict]:
+    """Walk every message (including nested tool_result content) and the
+    system prompt; redact matches in place. Same contract as
+    check.py.scan(): empty vault means nothing matched, safe to no-op
+    downstream (restore, StreamRestorer) unconditionally.
+    """
+    vault: dict = {}
+    value_to_token: dict = {}
+
+    new_messages = [
+        NormalizedMessage(role=m.role, content=_redact_blocks(m.content, vault, value_to_token))
+        for m in nr.messages
+    ]
+
+    system_context = nr.system_context
+    if isinstance(system_context, str):
+        system_context = _redact_text(system_context, vault, value_to_token)
+    elif isinstance(system_context, list):
+        system_context = _redact_blocks(system_context, vault, value_to_token)
+
+    if not vault:
+        return nr, {}
+
+    new_nr = NormalizedRequest(
+        model=nr.model,
+        system_context=system_context,
+        messages=new_messages,
+        stream=nr.stream,
+        metadata=dict(nr.metadata),
+        extra=dict(nr.extra),
+    )
+    return new_nr, vault
