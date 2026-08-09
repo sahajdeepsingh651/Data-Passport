@@ -1,83 +1,240 @@
-"""WRITE policy: keyword -> inject extraction instruction -> LLM drafts a
-document -> user confirms -> store.
+"""WRITE policy — draft extraction, validation, and sensitivity flags.
 
-This is a MINIMAL, test-grade implementation of the mechanism, not the real
-async extraction pipeline in ARCHITECTURE.md §4 (Opus 5 + structured
-outputs, dedup by subject_key, contradiction detection, a real review
-queue). Two deliberate simplifications, both worth knowing before reading
-this as more than a smoke test:
+G6 replaced the previous test-grade mechanism entirely. What changed and why:
 
-1. The real design extracts asynchronously, off the request's critical
-   path, using the org's own extraction credential (§4.1's "tee"). This
-   gateway holds no credential of its own (relay mode — see app.py), so
-   there is no independent way to make a second authenticated call here.
-   Instead, the extraction instruction rides in the SAME request as the
-   conversation, and Claude's single reply is parsed for the extracted
-   line — one round trip, not a separate async call.
-2. "User confirms" is stubbed as "written to a pending-review file rather
-   than auto-published" — there is no review queue UI. The point being
-   proven is only that nothing publishes without a gate in between.
+  * The old trigger injected `EXTRACTED_DECISION:` unconditionally and
+    parsed one line back out with a `startswith` scan. It produced a
+    free-text sentence, which cannot populate /v1/ingest's ~10 required
+    fields, and it fired on every request rather than on a human's explicit
+    ask. Now the trigger is gated on ESDS_SUBMIT in the last genuine human
+    turn (policies/markers.py) and asks for a fenced JSON block.
+  * The old sink wrote four keys to /tmp and called it "pending_review".
+    Now a draft is validated against the real ingest contract, DLP-scanned,
+    and parked in gateway/pending.py until a human approves it.
+
+This module stays PURE — no I/O, no bus calls, no disk. It builds the
+instruction, finds the draft, checks it, and derives flags. The flow that
+acts on the result lives in gateway/flows.py.
+
+Fields the model is NOT allowed to decide, and why:
+    session_id      identity, from the adapter (G1). A model-chosen session
+                    id would let a draft be filed against someone else's work.
+    captured_by     ditto — and since store S5 the bus derives authorship
+    hint.department  from the bearer token and ignores these fields anyway.
+    visibility      an access-control decision. Defaults to `team` and is
+                    the human's to widen, at approval time.
 """
-
 from __future__ import annotations
 
 import json
-import time
-from pathlib import Path
+import re
 
 from ..protocol.normalized import NormalizedRequest, NormalizedResponse
 from . import read as read_policy
 
-EXTRACTION_MARKER = "EXTRACTED_DECISION:"
+# Mirrors POST /v1/ingest (store/docs/data-passport-api-reference.md).
+VISIBILITY_VALUES = ("private", "team", "department", "org")
+STATUS_VALUES = ("in_progress", "completed", "blocked", "handed_off", "abandoned")
+OUTCOME_VALUES = ("decision_made", "insight_found", "issue_resolved",
+                  "blocker_hit", "question_open", "in_progress")
 
-_EXTRACTION_INSTRUCTION = (
-    "In addition to answering normally, end your reply with a new line "
-    f"starting with exactly '{EXTRACTION_MARKER} ' followed by a one-sentence "
-    "summary of the main technical decision discussed in this conversation, "
-    "including what was chosen and why."
-)
+DEFAULT_VISIBILITY = "team"
+DEFAULT_STATUS = "completed"
 
-# Test-only sink — never docs/ or fixtures/, per instruction to leave those
-# untouched. A real build would write to the review-queue table instead.
-_PENDING_REVIEW_DIR = Path("/tmp/dp_pending_review")
+# A fenced json block, non-greedy, anchored at line start. The model is told
+# to emit exactly one; if it emits several we take the LAST, on the theory
+# that a model correcting itself puts the good one last.
+_FENCE_RE = re.compile(r"^```json\s*\n(.*?)\n```", re.MULTILINE | re.DOTALL)
 
 
-def inject_extraction_trigger(nr: NormalizedRequest) -> NormalizedRequest:
-    """Add the extraction instruction to the conversation. Reuses
-    read.add_context — the same 'inject authoritative content into the
-    normalized conversation' primitive READ uses for retrieved documents.
-    The adapter's model-aware wire-format choice (role:"system" vs the
-    <system-reminder> fallback) applies here automatically, for free.
+def extraction_instruction(pending_id: str) -> str:
+    """The instruction injected when a human types ESDS_SUBMIT.
+
+    The pending id is minted BEFORE the model replies and embedded here so
+    the model can print it. That is what keeps the write to two turns: a
+    proxy cannot push, so if the gateway waited to reveal the id until the
+    next request, the human would have to take an otherwise-pointless turn
+    in between just to be told what to type.
     """
-    return read_policy.add_context(nr, _EXTRACTION_INSTRUCTION)
-
-
-def apply(nr: NormalizedRequest, response: NormalizedResponse) -> dict | None:
-    """If the response contains the extraction marker, write the extracted
-    line to a pending-review file (the confirmation-gate stand-in) instead
-    of publishing anywhere real. Returns the written record, or None if no
-    marker was found (nothing to extract this turn).
-    """
-    if EXTRACTION_MARKER not in response.text:
-        return None
-
-    line = next(
-        (l.strip() for l in response.text.splitlines() if l.strip().startswith(EXTRACTION_MARKER)),
-        None,
+    return (
+        "The user has asked to save a record of this session to the ESDS Data Passport "
+        "Context Bus. In addition to answering normally, end your reply with exactly one "
+        "fenced JSON block (```json ... ```) using this shape:\n"
+        "{\n"
+        '  "content": "<2-4 sentences: what was decided or learned, and why>",\n'
+        '  "knowledge": {\n'
+        '    "title": "<short label>",\n'
+        '    "summary": "<1-3 sentence distillation a stranger could act on>",\n'
+        f'    "outcome": "<one of: {", ".join(OUTCOME_VALUES)}>",\n'
+        '    "key_points": ["..."],\n'
+        '    "next_steps": ["..."]\n'
+        "  }\n"
+        "}\n"
+        "Do not include session ids, user ids, department, or visibility — the gateway "
+        "supplies those. Base it only on what actually happened in this conversation; "
+        "do not invent decisions that were not made.\n"
+        f"After the block, on its own line, write exactly: "
+        f"To save this, type ESDS_APPROVE {pending_id}"
     )
-    if line is None:
-        return None
 
-    extracted_text = line[len(EXTRACTION_MARKER):].strip()
-    record = {
-        "ts": time.time(),
-        "model": response.model,
-        "extracted": extracted_text,
-        "status": "pending_review",  # never auto-published
+
+def inject_extraction_trigger(nr: NormalizedRequest, pending_id: str) -> NormalizedRequest:
+    """Same injection primitive as READ, so the model-gated wire placement
+    (literal role='system' vs a folded <system-reminder>) is inherited."""
+    return read_policy.add_context(nr, extraction_instruction(pending_id))
+
+
+def find_draft(response: NormalizedResponse) -> dict | None:
+    """Extract the fenced JSON block from the assistant's reply.
+
+    Response-side only, and only from NormalizedResponse.text — which the
+    adapter builds from type=='text' blocks alone, so tool_use and thinking
+    blocks cannot smuggle a draft in. Returns None when there is no block
+    or it does not parse.
+    """
+    text = response.text or ""
+    matches = _FENCE_RE.findall(text)
+    if not matches:
+        return None
+    for raw in reversed(matches):        # last well-formed block wins
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+class DraftInvalid(Exception):
+    """Schema failure — RETRYABLE, bounded, via a side call."""
+
+    def __init__(self, field: str, reason: str):
+        self.field = field
+        self.reason = reason
+        super().__init__(f"{field}: {reason}")
+
+
+def validate_draft(draft: dict) -> dict:
+    """Check the model-supplied half of the ingest contract.
+
+    Only the fields the model is allowed to provide are checked here; the
+    gateway-supplied envelope (session_id, identity, visibility) is added
+    later by build_ingest_payload and cannot fail validation.
+    """
+    if not isinstance(draft, dict):
+        raise DraftInvalid("draft", "expected a JSON object")
+
+    content = draft.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise DraftInvalid("content", "required, must be a non-empty string")
+
+    knowledge = draft.get("knowledge")
+    if not isinstance(knowledge, dict):
+        raise DraftInvalid("knowledge", "required, must be an object")
+
+    for field in ("title", "summary"):
+        value = knowledge.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise DraftInvalid(f"knowledge.{field}", "required, must be a non-empty string")
+
+    outcome = knowledge.get("outcome")
+    if outcome not in OUTCOME_VALUES:
+        raise DraftInvalid("knowledge.outcome", f"must be one of {list(OUTCOME_VALUES)}")
+
+    for field in ("key_points", "next_steps", "open_questions"):
+        value = knowledge.get(field)
+        if value is not None and not (
+            isinstance(value, list) and all(isinstance(v, str) for v in value)
+        ):
+            raise DraftInvalid(f"knowledge.{field}", "must be a list of strings")
+
+    status = draft.get("status", DEFAULT_STATUS)
+    if status not in STATUS_VALUES:
+        raise DraftInvalid("status", f"must be one of {list(STATUS_VALUES)}")
+
+    return draft
+
+
+def sensitivity_flags(vault: dict, *, before: int = 0) -> dict:
+    """Derive the flags /v1/ingest records, from the redaction vault.
+
+    THIS IS THE FIELD NOTHING IN THE REPO PRODUCED BEFORE G6. The store
+    accepts sensitivity_flags and writes them to redaction_audit_log
+    without verifying them (store decisions-log:23 — server-side re-scanning
+    was considered and explicitly rejected, so the endpoint is the only
+    possible source of truth). Until the gateway filled this in, the store's
+    audit trail recorded a claim nobody was making.
+
+    `before` lets a caller count only the tokens minted while scanning THIS
+    draft, rather than every token in the conversation's vault.
+    """
+    tokens = list(vault)[before:] if before else list(vault)
+    credentials = any(t.startswith("⟦SECRET_") for t in tokens)
+    pii = any(t.startswith("⟦PII_") for t in tokens)
+    return {
+        "contains_pii": pii,
+        "contains_credentials": credentials,
+        "redaction_applied": bool(tokens),
+        "redaction_count": len(tokens),
     }
 
-    _PENDING_REVIEW_DIR.mkdir(exist_ok=True)
-    out_path = _PENDING_REVIEW_DIR / f"{int(time.time() * 1000)}.json"
-    out_path.write_text(json.dumps(record, indent=2))
-    record["_path"] = str(out_path)
-    return record
+
+def build_ingest_payload(draft: dict, *, session_id: str, user_id: str,
+                         department: str, team: str | None,
+                         visibility: str, flags: dict,
+                         agent_id: str | None = None,
+                         source_system: str = "claude-code") -> dict:
+    """Assemble the full /v1/ingest body: the model's draft plus the
+    envelope the model is not allowed to choose."""
+    knowledge = dict(draft.get("knowledge") or {})
+    payload = {
+        "source_system": source_system,
+        "captured_by": {"user_id": user_id, **({"agent_id": agent_id} if agent_id else {})},
+        "session_id": session_id,
+        "content": draft["content"],
+        "sensitivity_flags": flags,
+        "visibility": visibility,
+        "status": draft.get("status", DEFAULT_STATUS),
+        "knowledge": knowledge,
+        "hint": {"department": department, **({"team": team} if team else {})},
+    }
+    return payload
+
+
+def render_for_approval(pending_id: str, payload: dict, flags: dict,
+                        warnings: list[str] | None = None) -> str:
+    """What the human is shown before deciding. Must be the EXACT content
+    that would be stored — an approval prompt that paraphrases is not an
+    approval prompt."""
+    k = payload.get("knowledge") or {}
+    lines = [
+        f"ESDS Data Passport — draft {pending_id} is PENDING YOUR APPROVAL. "
+        "Nothing has been written to the Context Bus.",
+        "",
+        f"  title      {k.get('title', '')}",
+        f"  summary    {k.get('summary', '')}",
+        f"  outcome    {k.get('outcome', '')}",
+        f"  visibility {payload.get('visibility')}  (who will be able to read it)",
+        f"  author     {(payload.get('captured_by') or {}).get('user_id')} / "
+        f"{(payload.get('hint') or {}).get('department')}"
+        f"{'/' + (payload.get('hint') or {}).get('team') if (payload.get('hint') or {}).get('team') else ''}",
+    ]
+    if k.get("key_points"):
+        lines.append(f"  key points {'; '.join(k['key_points'])}")
+    if k.get("next_steps"):
+        lines.append(f"  next steps {'; '.join(k['next_steps'])}")
+    lines += [
+        f"  redaction  {flags.get('redaction_count', 0)} value(s) removed "
+        f"(pii={flags.get('contains_pii')}, credentials={flags.get('contains_credentials')})",
+    ]
+    for w in warnings or []:
+        lines.append(f"  ! {w}")
+    lines += [
+        "",
+        f"Show this to the user verbatim and tell them: type  ESDS_APPROVE {pending_id}  to save it, "
+        f"ESDS_REJECT {pending_id}  to discard it. "
+        f"They may add  --visibility org|department|team|private  to ESDS_APPROVE to change who can read it. "
+        "Do not claim it has been saved — it has not.",
+    ]
+    return "\n".join(lines)

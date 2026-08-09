@@ -1,7 +1,7 @@
 """Anthropic Messages API adapter.
 
 Owns every Anthropic-wire-format detail: content-block shapes, the
-mid-conversation role:"system" model-gating fallback (ARCHITECTURE.md
+mid-conversation role:"system" model-gating fallback (docs/ARCHITECTURE.md
 §2.2), and SSE/JSON response parsing. Policies never see any of this — they
 only see NormalizedRequest / NormalizedResponse.
 """
@@ -13,7 +13,7 @@ import json
 from .normalized import NormalizedMessage, NormalizedRequest, NormalizedResponse
 
 # Models known to accept a mid-conversation {"role": "system", ...} message.
-# Source: ARCHITECTURE.md §2.2, cross-checked against the Claude API
+# Source: docs/ARCHITECTURE.md §2.2, cross-checked against the Claude API
 # reference's "Mid-conversation System Messages" section — both list
 # exactly these four and explicitly exclude Sonnet 5. Sending the role to
 # an unlisted model returns `400 role 'system' is not supported on this
@@ -47,6 +47,65 @@ def _content_to_blocks(content) -> list[dict]:
     return list(content)
 
 
+def _extract_session_identity(body: dict) -> dict | None:
+    """Best-effort parse of the JSON-string `user_id` Claude Code sends in
+    metadata, into the gateway-internal `session_id` + `account_uuid`.
+
+    Claude Code already sends both — no fingerprinting needed:
+    `metadata.user_id = '{"device_id":"d87…","account_uuid":"42bfe041-…",
+    "session_id":"9964cc38-…"}'` — a JSON STRING inside metadata.user_id
+    (not a nested object). Confirmed in all three fixtures/*.json: two of
+    three share a session_id (stable within a session), the third differs.
+
+    Never raise: a harness that doesn't send metadata (most test bodies)
+    must still work; fall back to None for every missing piece.
+    """
+    try:
+        metadata = body.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        user_id = metadata.get("user_id")
+        if not isinstance(user_id, str) or not user_id.strip().startswith("{"):
+            return None
+        parsed = json.loads(user_id)
+        if not isinstance(parsed, dict):
+            return None
+        out: dict = {}
+        if isinstance(parsed.get("session_id"), str):
+            out["session_id"] = parsed["session_id"]
+        if isinstance(parsed.get("account_uuid"), str):
+            out["account_uuid"] = parsed["account_uuid"]
+        return out or None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _normalize_messages_for_compare(messages_raw) -> list:
+    """GT — re-normalize wire messages into the same shape to_normalized
+    produces, so mutation detection compares apples to apples."""
+    out = []
+    for m in messages_raw or []:
+        out.append({
+            "role": m.get("role", "user"),
+            "content": _content_to_blocks(m.get("content")),
+        })
+    return out
+
+
+def _messages_were_mutated(nr: "NormalizedRequest", orig_messages) -> bool:
+    """GT — has any policy altered nr.messages relative to the original
+    wire body? Re-normalize the wire body and compare with nr.messages.
+    A policy that ADDED a {role:system,...} message (read.add_context)
+    or rewrote text blocks (scan) makes them differ; a policy that only
+    added metadata (G1, G6's pending_id) does NOT alter nr.messages."""
+    if orig_messages is None:
+        return bool(nr.messages)
+    base = _normalize_messages_for_compare(orig_messages)
+    cur = [(m.role, m.content) for m in nr.messages]
+    base_pairs = [(b["role"], b["content"]) for b in base]
+    return cur != base_pairs
+
+
 class AnthropicAdapter:
     name = "anthropic"
 
@@ -58,22 +117,62 @@ class AnthropicAdapter:
             NormalizedMessage(role=m.get("role", "user"), content=_content_to_blocks(m.get("content")))
             for m in body.get("messages") or []
         ]
+        metadata = {"protocol": self.name}
+        session = _extract_session_identity(body)
+        if session is not None:
+            metadata.update(session)
+        # GT — passthrough fidelity. Stash the wire presence of `stream` and
+        # `system` so from_normalized can preserve them when nothing mutated
+        # the request. Pre-redaction, scan() returns the SAME nr object on
+        # the empty-vault path (no clone), so these flags survive to the
+        # serialize step. Pre-redaction of a matching request, scan() builds
+        # a new NormalizedRequest via clone_with_messages-equivalent fields
+        # AND copies extra, so the flags survive there too.
+        extra["__anth_stream_present"] = "stream" in body
+        extra["__anth_system_present"] = "system" in body
+        # Stash the original wire messages so a scan that matched NOTHING
+        # can emit them byte-for-byte unchanged — the bare-string `content`
+        # of a fresh user turn survives. This is a deliberate name double-
+        # underscore-prefixed so policies cannot accidentally pick it up;
+        # from_normalized strips it.
+        extra["__anth_orig_messages"] = body.get("messages")
         return NormalizedRequest(
             model=body.get("model"),
             system_context=body.get("system"),
             messages=messages,
             stream=bool(body.get("stream")),
-            metadata={"protocol": self.name},
+            metadata=metadata,
             extra=extra,
         )
 
     def from_normalized(self, nr: NormalizedRequest) -> dict:
-        raw = dict(nr.extra)
+        raw = {k: v for k, v in nr.extra.items() if not k.startswith("__anth_")}
         raw["model"] = nr.model
-        if nr.system_context is not None:
+        stream_present = nr.extra.get("__anth_stream_present", False)
+        system_present = nr.extra.get("__anth_system_present", False)
+        # Decide messages: if no policy mutated nr.messages, emit the
+        # original wire list byte-for-byte (bare strings stay bare strings,
+        # block-order preserved). Mutated iff nr.messages is no longer the
+        # same list identity as the one we built OR extra's stashed original
+        # has been replaced. The cleanest check: scan() returns a NEW
+        # NormalizedRequest on a match (clone), the SAME object on no match.
+        # We compare the normalized messages against the stashed original:
+        # if they are content-equal (no policy rewrote a block), emit the
+        # original. Else serialize the new one.
+        orig_messages = nr.extra.get("__anth_orig_messages")
+        emitted_messages = self._serialize_messages(nr) if _messages_were_mutated(nr, orig_messages) else orig_messages
+        if emitted_messages is None:
+            emitted_messages = self._serialize_messages(nr)
+        raw["messages"] = emitted_messages
+        # Preserve original `system` presence: a body that sent
+        # `"system": null` must round-trip as `"system": null`, not be dropped.
+        if system_present:
             raw["system"] = nr.system_context
-        raw["messages"] = self._serialize_messages(nr)
-        raw["stream"] = nr.stream
+        # Preserve original `stream` presence: a body with no `stream` key
+        # must round-trip with no `stream` key — emitting an explicit
+        # `false` adds tokens to the cache prefix and breaks T4.
+        if stream_present:
+            raw["stream"] = nr.stream
         return raw
 
     def _serialize_messages(self, nr: NormalizedRequest) -> list[dict]:
@@ -86,7 +185,7 @@ class AnthropicAdapter:
         mid-conversation system role; when it doesn't, fold the content
         into the preceding user turn's content instead (the documented
         <system-reminder> fallback — same cache-prefix cost, lower trust,
-        per ARCHITECTURE.md §2.2). The policy layer that produced this
+        per docs/ARCHITECTURE.md §2.2). The policy layer that produced this
         message never had to know any of this.
         """
         supports_system = _model_supports_system_role(nr.model)
@@ -127,7 +226,7 @@ class AnthropicAdapter:
         restoration will use. Restoring redacted tokens as bytes stream
         needs an incremental, boundary-aware buffer hooked directly into
         the relay loop (a token can split across SSE chunks — see
-        ARCHITECTURE.md §5's "streaming gotcha"), which is a distinct,
+        docs/ARCHITECTURE.md §5's "streaming gotcha"), which is a distinct,
         not-yet-built code path.
         """
         usage: dict = {}

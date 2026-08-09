@@ -88,7 +88,7 @@ def main():
         "`DP_INJECT=1`) so the comparison is gateway-vs-gateway with injection as the "
         "only variable — not gateway-vs-no-gateway, which would compare across different "
         "cache namespaces (caches are scoped per credential) and be invalid. See "
-        "TEST-PLAN.md T4 for why.\n"
+        "docs/TEST-PLAN.md T4 for why.\n"
     )
     out.append("## Arm A — no injection (`arm_a_no_inject`)\n")
     out.append(table_for_arm(entries, "arm_a_no_inject"))

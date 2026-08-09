@@ -2,7 +2,7 @@
 send the sanitized request -> restore values in the LLM response.
 
 This is a MINIMAL, test-grade implementation — one hardcoded pattern, not
-the real detector suite from ARCHITECTURE.md §5 (regex + entropy + NER for
+the real detector suite from docs/ARCHITECTURE.md §5 (regex + entropy + NER for
 AWS keys, JWTs, PAN, Aadhaar, etc.). It exists to prove the mechanism
 (tokenize before it leaves the gateway, restore before the developer sees
 the response), not to replace the Day 2 DLP build.
@@ -20,50 +20,94 @@ import re
 from ..protocol.normalized import NormalizedMessage, NormalizedRequest
 
 # A deliberately fake, test-only secret shape — never a real credential
-# format. Real detectors (AWS keys, JWTs, PAN, Aadhaar, ...) are Day 2 work.
+# format. Real detectors (AWS keys, JWTs, PAN, Aadhaar, ...) live in
+# pii.py; this single pattern exists to prove the SECRET_/PII_ disjoint-
+# prefix merging in app.py and to keep the QA-guide fixture path alive.
 _TEST_SECRET_PATTERN = re.compile(r"sk-test-[A-Za-z0-9]{10,}")
 
 
-def _redact_text(text: str, vault: dict) -> str:
-    def replace(match: re.Match) -> str:
-        real = match.group(0)
-        token = f"⟦SECRET_{len(vault) + 1}⟧"
-        vault[token] = real
-        return token
+def _mint_token(value: str, prefix: str, vault: dict, value_to_token: dict) -> str:
+    """Same value -> same token, always, so a repeated secret yields one
+    token (matches pii.py's dedup semantics; backported here so the two
+    policies have the same reach). This was QA-FINDINGS.md #57's known
+    issue — `check.scan` minted fresh tokens per match."""
+    token = value_to_token.get(value)
+    if token is None:
+        token = f"⟦{prefix}_{len(vault) + 1}⟧"
+        vault[token] = value
+        value_to_token[value] = token
+    return token
+
+
+def _redact_text(text: str, prefix: str, vault: dict, value_to_token: dict) -> str:
+    def replace(match: "re.Match[str]") -> str:
+        return _mint_token(match.group(0), prefix, vault, value_to_token)
 
     return _TEST_SECRET_PATTERN.sub(replace, text)
 
 
+def _redact_blocks(blocks: list[dict], prefix: str, vault: dict, value_to_token: dict) -> list[dict]:
+    """Mirror of pii.py's _redact_blocks' recursion contract (same reach,
+    different prefix): text blocks + tool_result.content (nested str/list)
+    + tool_use.input. A tool_use argument record left in clear text is the
+    P2 leak PII fixed internally — keep CHECK's reach level here too."""
+    out = []
+    for block in blocks:
+        block = dict(block)
+        if block.get("type") == "text" and "text" in block:
+            block["text"] = _redact_text(block["text"], prefix, vault, value_to_token)
+        elif block.get("type") == "tool_use" and isinstance(block.get("input"), dict):
+            # Walk every string in input.server-side; no field-name gate
+            # here since the test-secret pattern is shape-only.
+            block["input"] = _redact_json_strings(block["input"], prefix, vault, value_to_token)
+        elif "content" in block:
+            nested = block["content"]
+            if isinstance(nested, str):
+                block["content"] = _redact_text(nested, prefix, vault, value_to_token)
+            elif isinstance(nested, list):
+                block["content"] = _redact_blocks(nested, prefix, vault, value_to_token)
+        out.append(block)
+    return out
+
+
+def _redact_json_strings(obj, prefix: str, vault: dict, value_to_token: dict):
+    """For CHECK there is no sensitive-field-name list (the test pattern is
+    shape-only), so redact ANY string match anywhere in a nested JSON value.
+    This matches pii.py's reach without importing its field-name set."""
+    if isinstance(obj, dict):
+        return {k: _redact_json_strings(v, prefix, vault, value_to_token) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_json_strings(v, prefix, vault, value_to_token) for v in obj]
+    if isinstance(obj, str):
+        return _redact_text(obj, prefix, vault, value_to_token)
+    return obj
+
+
 def scan(nr: NormalizedRequest) -> tuple[NormalizedRequest, dict]:
-    """Walk every text block in the normalized request; replace matches of
-    the test secret pattern with opaque tokens. Returns the (possibly
-    mutated) request and a vault mapping token -> real value.
+    """Walk every message (including nested tool_result content and
+    tool_use inputs) and the system prompt; replace matches of the test
+    secret pattern with opaque tokens. Returns the (possibly mutated)
+    request and a vault mapping token -> real value.
 
     Empty vault (the common case, when nothing matches) means restore()
     downstream is a no-op — safe to call unconditionally.
     """
     vault: dict = {}
-    new_messages = []
-    for m in nr.messages:
-        new_content = []
-        for block in m.content:
-            if block.get("type") == "text" and "text" in block:
-                block = dict(block)
-                block["text"] = _redact_text(block["text"], vault)
-            new_content.append(block)
-        new_messages.append(NormalizedMessage(role=m.role, content=new_content))
+    value_to_token: dict = {}
+    prefix = "SECRET"
+    new_messages = [
+        NormalizedMessage(
+            role=m.role,
+            content=_redact_blocks(m.content, prefix, vault, value_to_token),
+        )
+        for m in nr.messages
+    ]
 
     system_context = nr.system_context
     if isinstance(system_context, str):
-        system_context = _redact_text(system_context, vault)
+        system_context = _redact_text(system_context, prefix, vault, value_to_token)
     elif isinstance(system_context, list):
-        new_system = []
-        for block in system_context:
-            if block.get("type") == "text" and "text" in block:
-                block = dict(block)
-                block["text"] = _redact_text(block["text"], vault)
-            new_system.append(block)
-        system_context = new_system
+        system_context = _redact_blocks(system_context, prefix, vault, value_to_token)
 
     if not vault:
         return nr, {}
@@ -77,6 +121,24 @@ def scan(nr: NormalizedRequest) -> tuple[NormalizedRequest, dict]:
         extra=dict(nr.extra),
     )
     return new_nr, vault
+
+
+def scan_text(text: str, vault: dict) -> str:
+    """Public text-level redactor (see G3): scan a bare string — not a
+    NormalizedRequest — against the test-secret pattern. The vault is
+    mutated in place so retrieved-context or LLM-draft scanning lands in
+    the same token->value map the response restorer already uses. REQUIRED
+    for the Q4 ordering fix: retrieved bus documents must scan into the
+    existing vault rather than spawning a sibling restorer.
+
+    Stable contract: empty input vault in -> a no-op if nothing matches,
+    non-empty vault in -> existing tokens preserved, new matches minted
+    on top. Token numbering is len(vault)+1 so collisions with the merged
+    PII vault are impossible across disjoint SECRET_/PII_ prefixes."""
+    if not _TEST_SECRET_PATTERN.search(text):
+        return text
+    value_to_token = {v: k for k, v in vault.items() if k.startswith("⟦SECRET_")}
+    return _redact_text(text, "SECRET", vault, value_to_token)
 
 
 def restore(text: str, vault: dict) -> str:
@@ -96,7 +158,7 @@ class StreamRestorer:
     that match. This holds back the longest suffix that could still be the
     start of some token, and only releases it once it's known not to be
     part of one — the same technique described for restoring redacted
-    tokens in ARCHITECTURE.md §5's "streaming gotcha".
+    tokens in docs/ARCHITECTURE.md §5's "streaming gotcha".
     """
 
     def __init__(self, vault: dict):
