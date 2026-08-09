@@ -72,6 +72,8 @@ def reset_awareness_state() -> None:
 
 def _log(msg: str) -> None:
     print(f"[FLOW] {msg}", flush=True)
+    with open("/tmp/dp_debug.log", "a") as f:
+        f.write(f"[FLOW] {msg}\n")
 
 
 def _scan_into_vault(text: str, vault: dict) -> str:
@@ -317,12 +319,15 @@ async def _handle_approve(nr, diag, approve_line, session_id, account_uuid, *, b
     pending_id = markers_policy.find_marker_arg(nr, APPROVE_MARKER)
     nr = markers_policy.strip_marker(nr, APPROVE_MARKER)
 
+    _log(f"Loading {pending_id} for session {session_id}")
     record = pending.load(pending_id, session_id=session_id) if pending_id else None
     if record is None:
         diag["reason"] = "no_such_pending"
+        _log(f"Load failed for {pending_id}, session {session_id}")
         return read_policy.add_context(nr, (
             f"ESDS Data Passport: no pending draft {pending_id!r} for this session. "
             "Nothing was saved. Tell the user.")), diag
+    _log(f"Load succeeded for {pending_id}, session {session_id}")
 
     bus_id = identity_policy.resolve(account_uuid)
     if bus_id is None:
@@ -439,8 +444,11 @@ def handle_write_response(nr, response, vault: dict) -> dict:
         draft=scanned, sensitivity_flags=flags, warnings=warnings,
     )
     diag["captured"] = True
+    import os
     _log(f"draft {pending_id} captured and PENDING approval "
-         f"(redacted {flags['redaction_count']} value(s)) — nothing written to the bus")
+         f"(redacted {flags['redaction_count']} value(s)) — nothing written to the bus. "
+         f"CWD: {os.getcwd()}, PENDING_DIR: {pending.PENDING_DIR}, "
+         f"SAVE_SESSION: {nr.metadata.get('session_id')}")
     return diag
 
 
