@@ -64,6 +64,10 @@ def idempotency_key(session_id: str, draft: dict) -> str:
     return hashlib.sha256(f"{session_id}\n{canonical}".encode()).hexdigest()
 
 
+import threading
+
+_pending_lock = threading.Lock()
+
 def save(*, pending_id: str, session_id: str, account_uuid: str | None,
          draft: dict, sensitivity_flags: dict, warnings: list[str] | None = None) -> dict:
     """Persist a validated, DLP-scanned draft as PENDING. Never sends."""
@@ -78,10 +82,17 @@ def save(*, pending_id: str, session_id: str, account_uuid: str | None,
         "created_at": time.time(),
     }
     path = _path(pending_id)
-    path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+    tmp_path = path.with_suffix(".tmp")
     
-    with open("/tmp/dp_debug.log", "a") as f:
-        f.write(f"[PENDING] saved {pending_id} to {path}\n")
+    with _pending_lock:
+        tmp_path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+        tmp_path.rename(path)
+    
+    # We use a simple global lock instead of per-session, as load is low
+    from .flows import _log_lock
+    with _log_lock:
+        with open("/tmp/dp_debug.log", "a") as f:
+            f.write(f"[PENDING] saved {pending_id} to {path}\n")
         
     return record
 
@@ -96,24 +107,42 @@ def load(pending_id: str, *, session_id: str | None = None) -> dict | None:
         path = _path(pending_id)
     except ValueError:
         return None
-    if not path.exists():
-        return None
-    try:
-        record = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+        
+    with _pending_lock:
+        if not path.exists():
+            return None
+        try:
+            record = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+            
     if session_id is not None and record.get("session_id") != session_id:
         return None
     return record
 
 
 def set_status(pending_id: str, status: str, **extra) -> dict | None:
-    record = load(pending_id)
-    if record is None:
-        return None
-    record["status"] = status
-    record.update(extra)
-    _path(pending_id).write_text(json.dumps(record, indent=2, ensure_ascii=False))
+    with _pending_lock:
+        try:
+            path = _path(pending_id)
+        except ValueError:
+            return None
+            
+        if not path.exists():
+            return None
+            
+        try:
+            record = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+            
+        record["status"] = status
+        record.update(extra)
+        
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+        tmp_path.rename(path)
+        
     return record
 
 
