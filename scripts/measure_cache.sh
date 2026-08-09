@@ -37,7 +37,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cp "$ROOT/ARCHITECTURE.md" "$ROOT/SUBMISSION-approach.md" "$ROOT/SUBMISSION-infrastructure.md" "$ROOT/TEST-PLAN.md" "$SCRATCH/"
+cp "$ROOT/docs/ARCHITECTURE.md" "$SCRATCH/"
+cp "$ROOT/docs/submissions/approach.md" "$SCRATCH/SUBMISSION-approach.md"
+cp "$ROOT/docs/submissions/infrastructure.md" "$SCRATCH/SUBMISSION-infrastructure.md"
+cp "$ROOT/docs/TEST-PLAN.md" "$SCRATCH/"
 
 start_gateway() {
   local inject="$1" arm_label="$2" inject_text="${3:-}"

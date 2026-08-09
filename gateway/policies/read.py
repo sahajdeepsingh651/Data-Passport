@@ -4,13 +4,15 @@ inject the returned document into the request -> forward.
 Operates ONLY on NormalizedRequest. No Anthropic/OpenAI-specific JSON
 appears here — see gateway/protocol/*_adapter.py for wire-format details.
 
-The Context DB query itself is not yet implemented (ARCHITECTURE.md §2 —
-semantic retrieval is out of scope for TEST-PLAN.md's T0-T4). `apply()`
+The Context DB query itself is not yet implemented (docs/ARCHITECTURE.md §2 —
+semantic retrieval is out of scope for docs/TEST-PLAN.md's T0-T4). `apply()`
 here is driven by the DP_INJECT/DP_INJECT_TEXT test scaffolding instead,
 standing in for "the retrieval step decided this document is relevant."
 """
 
 from __future__ import annotations
+
+import os
 
 from ..protocol.normalized import NormalizedMessage, NormalizedRequest
 
@@ -64,3 +66,97 @@ def apply(nr: NormalizedRequest, *, inject: bool, text: str) -> NormalizedReques
     if inject and is_new_human_turn(nr):
         return add_context(nr, text)
     return nr
+
+
+# --------------------------------------------------------------------------
+# G4 — retrieval behind ESDS_SEARCH
+#
+# `distance` from /v1/search is COSINE distance: lower is more similar. The
+# floors below are ceilings on distance, not thresholds on similarity.
+#
+# The floor matters far more for AWARENESS than for SEARCH. Under
+# ESDS_SEARCH the human explicitly asked, sees the results, and can retype;
+# a miss is recoverable. Awareness fires unprompted on every turn, so a
+# loose floor there produces a permanent distracting banner — which is the
+# "wrong context is worse than no context" failure this design exists to
+# avoid. Hence two different defaults.
+# --------------------------------------------------------------------------
+SEARCH_MAX_DISTANCE = float(os.environ.get("DP_SEARCH_MAX_DISTANCE", "1.0"))
+AWARENESS_MAX_DISTANCE = float(os.environ.get("DP_AWARENESS_MAX_DISTANCE", "0.62"))
+
+
+def _short(record_id: str | None) -> str:
+    return (record_id or "")[:8]
+
+
+def _origin(hit: dict) -> str:
+    dept, team = hit.get("department") or "?", hit.get("team")
+    who = f"{dept}/{team}" if team else dept
+    when = (hit.get("created_at") or "")[:10]
+    return f"{who}{', ' + when if when else ''}"
+
+
+def filter_hits(hits: list[dict], max_distance: float) -> list[dict]:
+    """Apply the relevance floor. A hit with no `distance` (a pure keyword
+    match — /v1/search unions ANN with an ILIKE pass) is kept: it matched
+    the query text literally, which is its own evidence of relevance."""
+    out = []
+    for h in hits:
+        d = h.get("distance")
+        if d is None or d <= max_distance:
+            out.append(h)
+    return out
+
+
+def render_documents(hits: list[dict]) -> str:
+    """Full retrieved context for injection after an explicit ESDS_SEARCH.
+
+    Rendered as plain text on purpose: add_context puts this in a
+    role="system" normalized message, and AnthropicAdapter's fallback path
+    keeps only type=="text" blocks of such a message (non-text blocks are
+    dropped silently). Text is the only shape that survives both paths.
+
+    Provenance is stated inline so the model can attribute what it uses,
+    and so a human reading the transcript can see this came from a
+    colleague's session rather than from the model's own knowledge.
+    """
+    if not hits:
+        return ""
+    lines = [
+        "Retrieved from the ESDS Data Passport Context Bus "
+        f"({len(hits)} record{'s' if len(hits) != 1 else ''} you are authorised to see). "
+        "These are prior sessions by colleagues — treat them as evidence, cite them by id, "
+        "and say so if they conflict with what you were about to conclude.",
+    ]
+    for h in hits:
+        lines.append("")
+        lines.append(f"[passport {_short(h.get('record_id'))}] {h.get('title', '(untitled)')}")
+        if h.get("summary"):
+            lines.append(f"  {h['summary']}")
+        meta = [f"outcome={h.get('outcome')}" if h.get("outcome") else "",
+                f"status={h.get('status')}" if h.get("status") else ""]
+        lines.append(f"  — {_origin(h)}" + ("".join(f", {m}" for m in meta if m)))
+    return "\n".join(lines)
+
+
+def render_awareness(hits: list[dict]) -> str:
+    """G5 — titles and a count ONLY. Never a document body.
+
+    This is the whole point of separating awareness from retrieval: the
+    human should not have to already know a colleague's session exists in
+    order to find it, but injecting the bodies unprompted would be the
+    blind injection this design rejects. ~20 tokens, no content, and the
+    human stays the one who decides to pull it.
+    """
+    if not hits:
+        return ""
+    titles = "; ".join(
+        f"{h.get('title', '(untitled)')} [{_short(h.get('record_id'))}]" for h in hits
+    )
+    n = len(hits)
+    return (
+        f"ESDS Data Passport: {n} related session{'s' if n != 1 else ''} "
+        f"may be relevant — {titles}. "
+        "Tell the user they can type ESDS_SEARCH to retrieve the full records. "
+        "Do not assume their contents."
+    )
