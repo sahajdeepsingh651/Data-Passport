@@ -113,7 +113,21 @@ USAGE_LOG_PATH = DOCS_DIR / "usage_log.jsonl"
 
 DEBUG_OUTBOUND_PATH = Path("/tmp/dp_outbound_debug.json")
 
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+dashboard_queue = asyncio.Queue()
+
 _client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0))
 
 
@@ -193,11 +207,16 @@ def _apply_write(nr, normalized_resp, vault: dict) -> None:
     store. This NEVER writes to the Context Bus — approval does, and only
     a human can trigger that."""
     result = flows.handle_write_response(nr, normalized_resp, vault)
+    msg = ""
     if result.get("captured"):
-        print(f"[WRITE] draft {result['pending_id']} pending approval", flush=True)
+        msg = f"[WRITE] draft {result['pending_id']} pending approval"
     elif result.get("pending_id") and result.get("reason"):
-        print(f"[WRITE] draft {result['pending_id']} not captured: {result['reason']}",
-              flush=True)
+        msg = f"[WRITE] draft {result['pending_id']} not captured: {result['reason']}"
+    
+    if msg:
+        print(msg, flush=True)
+        with open("/tmp/dp_debug.log", "a") as f:
+            f.write(msg + "\n")
 
 
 async def _restore_sse_stream(raw_chunks, vault: dict):
@@ -331,6 +350,17 @@ async def proxy(path: str, request: Request):
     # flows.handle_write_request above.)
 
     out_body = adapter.from_normalized(nr)
+    
+    # Broadcast to dashboard
+    try:
+        dashboard_queue.put_nowait({
+            "type": "request",
+            "raw": body,
+            "sanitized": out_body
+        })
+    except Exception:
+        pass
+
     payload = json.dumps(out_body).encode()
     maybe_log_outbound(payload)
     headers = strip_request_headers(request.headers)
@@ -398,3 +428,34 @@ async def proxy(path: str, request: Request):
         _apply_write(nr, normalized_resp, vault)
 
     return StreamingResponse(relay(), status_code=real_status, media_type="text/event-stream")
+
+@app.get("/v1/dashboard/stream")
+async def dashboard_stream(request: Request):
+    """SSE endpoint for live dashboard traffic monitoring."""
+    async def event_generator():
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                data = await asyncio.wait_for(dashboard_queue.get(), timeout=1.0)
+                yield f"data: {json.dumps(data)}\n\n"
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/v1/dashboard/pending")
+async def dashboard_pending():
+    """REST endpoint for dashboard to view pending drafts."""
+    from .pending import PENDING_DIR
+    drafts = []
+    if PENDING_DIR.exists():
+        for p in PENDING_DIR.glob("*.json"):
+            try:
+                with open(p) as f:
+                    draft = json.load(f)
+                    drafts.append(draft)
+            except Exception:
+                pass
+    # sort by timestamp descending
+    drafts.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
+    return JSONResponse({"drafts": drafts})

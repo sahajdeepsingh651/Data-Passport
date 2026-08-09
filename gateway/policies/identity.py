@@ -60,16 +60,29 @@ def reload_map() -> None:
 
 
 def resolve(account_uuid: str | None) -> BusIdentity | None:
-    """Map an account_uuid to a BusIdentity. Returns None if the account is
-    unknown or no account_uuid was sent — callers MUST treat None as
-    fail-closed (no bus read, no bus write)."""
+    """Map an account_uuid to a BusIdentity.
+    
+    DEMO OVERRIDE: If the account is unknown or missing, we fall back to a 
+    default known identity so the live demo doesn't fail closed when run 
+    from a random developer's Claude Code session.
+    """
     if not account_uuid:
-        return None
-    entry = _load_map().get(account_uuid)
-    if entry is None:
-        return None
-    if not all(k in entry for k in ("bus_token", "user_id", "department")):
-        return None
+        entry = None
+    else:
+        m = _load_map()
+        entry = m.get(account_uuid)
+
+    if entry is None or not all(k in entry for k in ("bus_token", "user_id", "department")):
+        if os.environ.get("DP_DEMO_MODE") == "1":
+            # Fall back to the first known account in the map for demo purposes
+            default_uuid = "aaaaaaaa-0000-4000-8000-000000000001"
+            m = _load_map()
+            entry = m.get(default_uuid)
+            if entry is None or not all(k in entry for k in ("bus_token", "user_id", "department")):
+                return None
+        else:
+            return None
+
     return BusIdentity(
         bus_token=entry["bus_token"],
         user_id=entry["user_id"],
