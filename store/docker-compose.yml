@@ -18,5 +18,22 @@ services:
       timeout: 5s
       retries: 10
 
+  backend:
+    image: data-passport-backend:latest
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: data-passport-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config
+
 volumes:
   postgres_data:

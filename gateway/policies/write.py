@@ -85,24 +85,61 @@ def inject_extraction_trigger(nr: NormalizedRequest, pending_id: str) -> Normali
 
 
 def find_draft(response: NormalizedResponse) -> dict | None:
-    """Extract the fenced JSON block from the assistant's reply.
-
-    Response-side only, and only from NormalizedResponse.text — which the
-    adapter builds from type=='text' blocks alone, so tool_use and thinking
-    blocks cannot smuggle a draft in. Returns None when there is no block
-    or it does not parse.
-    """
+    """Extract the fenced JSON block from the assistant's reply."""
+    import json
+    import re
+    
     text = response.text or ""
+    
+    # Try markdown fences first
     matches = _FENCE_RE.findall(text)
-    if not matches:
-        return None
-    for raw in reversed(matches):        # last well-formed block wins
+    for raw in reversed(matches):
         try:
             parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
-            return parsed
+
+    # Fallback: robust bracket balancer for naked JSON
+    import re
+    start_idx = 0
+    while True:
+        match = re.search(r'\{\s*"content"', text[start_idx:])
+        if not match:
+            break
+            
+        idx = start_idx + match.start()
+        start_idx = idx + 1
+        
+        # Balance brackets
+        depth = 0
+        in_string = False
+        escape = False
+        
+        for i in range(idx, len(text)):
+            c = text[i]
+            if not escape and c == '"':
+                in_string = not in_string
+            
+            if not in_string:
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    
+            escape = (c == '\\' and not escape)
+            
+            if depth == 0:
+                raw = text[idx:i+1]
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+                break
+                
     return None
 
 

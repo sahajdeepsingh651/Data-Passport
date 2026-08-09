@@ -77,7 +77,12 @@ def save(*, pending_id: str, session_id: str, account_uuid: str | None,
         "status": STATUS_PENDING,
         "created_at": time.time(),
     }
-    _path(pending_id).write_text(json.dumps(record, indent=2, ensure_ascii=False))
+    path = _path(pending_id)
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+    
+    with open("/tmp/dp_debug.log", "a") as f:
+        f.write(f"[PENDING] saved {pending_id} to {path}\n")
+        
     return record
 
 
@@ -113,6 +118,11 @@ def set_status(pending_id: str, status: str, **extra) -> dict | None:
 
 
 def delete(pending_id: str) -> bool:
+    import traceback
+    with open("/tmp/dp_debug.log", "a") as f:
+        f.write(f"[PENDING] deleting {pending_id}\n")
+        f.write("".join(traceback.format_stack()))
+        
     try:
         path = _path(pending_id)
     except ValueError:

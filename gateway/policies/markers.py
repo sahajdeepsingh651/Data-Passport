@@ -147,8 +147,19 @@ def strip_marker(nr: NormalizedRequest, marker: str) -> NormalizedRequest:
         if block.get("type") != "text" or "text" not in block:
             new_content.append(block)
             continue
-        kept = [ln for ln in block["text"].splitlines()
-                if _line_anchored_match(ln, marker) is None]
+        kept = []
+        for ln in block["text"].splitlines():
+            if _line_anchored_match(ln, marker) is not None:
+                # The line starts with the marker. We should strip the marker
+                # but preserve any query text that follows it.
+                rest = ln[ln.find(marker) + len(marker):].lstrip()
+                if rest.startswith(":"):
+                    rest = rest[1:].lstrip()
+                if rest:
+                    kept.append(rest)
+            else:
+                kept.append(ln)
+                
         new_text = "\n".join(kept).strip()
         if new_text != block["text"]:
             changed = True
