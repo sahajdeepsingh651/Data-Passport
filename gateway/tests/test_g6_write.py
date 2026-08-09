@@ -146,7 +146,7 @@ async def test_approve_ingests_exactly_once():
     assert len(bus.ingest_calls) == 1
     assert diag["record_id"] == "rec-1"
     assert "SAVED" in injected_text(out)
-    assert pending.load(pid) is None, "approved draft should be cleared"
+    assert pending.load(pid)["status"] == pending.STATUS_APPROVED, "approved draft should be marked approved"
 
 
 @sync
@@ -168,8 +168,8 @@ async def test_replayed_approve_does_not_ingest_twice():
     await flows.handle_write_request(nr(f"ESDS_APPROVE {pid}"), {}, bus=bus)
     out, diag = await flows.handle_write_request(nr(f"ESDS_APPROVE {pid}"), {}, bus=bus)
     assert len(bus.ingest_calls) == 1
-    assert diag["reason"] == "no_such_pending"
-    assert "no pending draft" in injected_text(out)
+    assert diag["reason"] == "already_approved"
+    assert "ALREADY SAVED" in injected_text(out)
 
 
 @sync
@@ -235,7 +235,7 @@ async def test_reject_clears_the_draft_and_never_ingests():
     pid, _, _, _ = await submit_and_capture(bus)
     out, diag = await flows.handle_write_request(nr(f"ESDS_REJECT {pid}"), {}, bus=bus)
     assert diag["action"] == "reject"
-    assert pending.load(pid) is None
+    assert pending.load(pid)["status"] == pending.STATUS_REJECTED
     assert bus.ingest_calls == []
     assert "discarded" in injected_text(out)
 
