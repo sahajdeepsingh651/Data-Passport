@@ -70,10 +70,19 @@ def reset_awareness_state() -> None:
     _awareness_last.clear()
 
 
+import threading
+
+_awareness_lock = threading.Lock()
+_log_lock = threading.Lock()
+
+_failed_drafts: dict[str, str] = {} # pending_id -> failure_reason
+_failed_drafts_lock = threading.Lock()
+
 def _log(msg: str) -> None:
     print(f"[FLOW] {msg}", flush=True)
-    with open("/tmp/dp_debug.log", "a") as f:
-        f.write(f"[FLOW] {msg}\n")
+    with _log_lock:
+        with open("/tmp/dp_debug.log", "a") as f:
+            f.write(f"[FLOW] {msg}\n")
 
 
 def _scan_into_vault(text: str, vault: dict) -> str:
@@ -170,13 +179,6 @@ async def handle_awareness(nr, vault: dict, *, bus=bus_client, now=None):
         diag["reason"] = "search_marker_present"
         return nr, diag
 
-    session_id = nr.metadata.get("session_id") or "_nosession"
-    clock = now if now is not None else time.monotonic()
-    last = _awareness_last.get(session_id)
-    if last is not None and (clock - last) < AWARENESS_COOLDOWN_SECONDS:
-        diag["reason"] = "cooldown"
-        return nr, diag
-
     bus_id = identity_policy.resolve(nr.metadata.get("account_uuid"))
     if bus_id is None:
         diag["reason"] = "unknown_account"
@@ -187,7 +189,16 @@ async def handle_awareness(nr, vault: dict, *, bus=bus_client, now=None):
         diag["reason"] = "empty_query"
         return nr, diag
 
-    _awareness_last[session_id] = clock
+    session_id = nr.metadata.get("session_id") or "_nosession"
+    clock = now if now is not None else time.monotonic()
+    
+    with _awareness_lock:
+        last = _awareness_last.get(session_id)
+        if last is not None and (clock - last) < AWARENESS_COOLDOWN_SECONDS:
+            diag["reason"] = "cooldown"
+            return nr, diag
+        _awareness_last[session_id] = clock
+
     diag["probed"] = True
     try:
         hits = await bus.search(query, token=bus_id.bus_token,
@@ -282,11 +293,14 @@ async def handle_write_request(nr, vault: dict, *, bus=bus_client):
             note = (f"ESDS Data Passport: no pending draft {pending_id!r} for this session. "
                     "Nothing was discarded.")
         else:
-            pending.set_status(pending_id, pending.STATUS_REJECTED)
-            pending.delete(pending_id)
-            note = (f"ESDS Data Passport: draft {pending_id} discarded. "
-                    "Nothing was written to the Context Bus.")
-            diag["pending_id"] = pending_id
+            if record.get("status") == pending.STATUS_REJECTED:
+                note = (f"ESDS Data Passport: draft {pending_id} was ALREADY discarded. "
+                        "Nothing was written to the Context Bus.")
+            else:
+                pending.set_status(pending_id, pending.STATUS_REJECTED)
+                note = (f"ESDS Data Passport: draft {pending_id} discarded. "
+                        "Nothing was written to the Context Bus.")
+                diag["pending_id"] = pending_id
         return read_policy.add_context(nr, note + " Tell the user this."), diag
 
     # --- submit: mint the id, ask for a draft. Writes NOTHING. ---
@@ -324,10 +338,30 @@ async def _handle_approve(nr, diag, approve_line, session_id, account_uuid, *, b
     if record is None:
         diag["reason"] = "no_such_pending"
         _log(f"Load failed for {pending_id}, session {session_id}")
-        return read_policy.add_context(nr, (
-            f"ESDS Data Passport: no pending draft {pending_id!r} for this session. "
-            "Nothing was saved. Tell the user.")), diag
+        
+        failure_reason = None
+        if pending_id:
+            with _failed_drafts_lock:
+                failure_reason = _failed_drafts.pop(pending_id, None)
+                
+        if failure_reason:
+            msg = (f"ESDS Data Passport: draft {pending_id} FAILED SCHEMA VALIDATION "
+                   f"and was not captured. Reason: {failure_reason}. "
+                   "You must submit a new draft with the corrected schema.")
+        else:
+            msg = (f"ESDS Data Passport: no pending draft {pending_id!r} for this session. "
+                   "Nothing was saved. Tell the user.")
+                   
+        return read_policy.add_context(nr, msg), diag
     _log(f"Load succeeded for {pending_id}, session {session_id}")
+
+    if record.get("status") == pending.STATUS_APPROVED:
+        diag["reason"] = "already_approved"
+        record_id = record.get("record_id", "unknown")
+        return read_policy.add_context(nr, (
+            f"ESDS Data Passport: draft {pending_id} was ALREADY SAVED to the Context Bus as "
+            f"record {record_id}. Tell the user it was successfully saved."
+        )), diag
 
     bus_id = identity_policy.resolve(account_uuid)
     if bus_id is None:
@@ -377,7 +411,6 @@ async def _handle_approve(nr, diag, approve_line, session_id, account_uuid, *, b
         diag["record_id"] = record_id
         diag["pending_id"] = pending_id
         pending.set_status(pending_id, pending.STATUS_APPROVED, record_id=record_id)
-        pending.delete(pending_id)
         note = (
             f"ESDS Data Passport: draft {pending_id} was SAVED to the Context Bus as "
             f"record {record_id} with visibility '{visibility}'"
@@ -420,8 +453,11 @@ def handle_write_response(nr, response, vault: dict) -> dict:
     try:
         write_policy.validate_draft(draft)
     except write_policy.DraftInvalid as exc:
-        diag["reason"] = f"invalid:{exc.field}:{exc.reason}"
+        reason = f"invalid:{exc.field}:{exc.reason}"
+        diag["reason"] = reason
         diag["retryable"] = True
+        with _failed_drafts_lock:
+            _failed_drafts[pending_id] = reason
         return diag
 
     # DLP-scan the draft BEFORE it is stored. The vault is the request's, so
@@ -509,7 +545,6 @@ async def drain_queued_writes(session_id: str, account_uuid: str | None, *, bus=
         if status in (200, 201):
             record_id = (body or {}).get("record_id")
             pending.set_status(pending_id, pending.STATUS_APPROVED, record_id=record_id)
-            pending.delete(pending_id)
             results.append({"pending_id": pending_id, "ok": True, "record_id": record_id})
             _log(f"queued draft {pending_id} drained -> record {record_id}")
         else:

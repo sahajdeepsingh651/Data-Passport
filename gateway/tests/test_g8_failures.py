@@ -186,7 +186,7 @@ async def test_queued_write_is_drained_on_the_next_request():
 
     assert len(up.ingest_calls) == 1, "queued write was not retried"
     assert diag.get("drained") and diag["drained"][0]["ok"] is True
-    assert pending.load(pid) is None, "drained write should be cleared"
+    assert pending.load(pid)["status"] == pending.STATUS_APPROVED, "drained write should be marked approved"
 
 
 @sync
