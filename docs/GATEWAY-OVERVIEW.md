@@ -73,160 +73,151 @@ be redirected at all.
 
 ## 3. Request pipeline
 
-Every request flows through `gateway/app.py::proxy`, the single `POST /{path:path}`
-route:
-
 ```
-   raw bytes
-       │
-       ▼
-   json.loads ────────── fails ──────────┐
-       │                                 │
-       ▼                                 │
-   detect(request, body) ── None ────────┤
-       │                                 ▼
-       │                        passthrough_raw()
-       ▼                        forward byte-identical
-   adapter.to_normalized()      (fail-open)
-       │
-       ▼
-   ┌─────────────────────────────────┐
-   │ CHECK  scan()                   │  redact secrets → vault{token: real}
-   │        (unconditional)          │
-   ├─────────────────────────────────┤
-   │ READ   apply()                  │  if DP_INJECT and genuine human turn:
-   │        (DP_INJECT)              │  append role="system" context message
-   ├─────────────────────────────────┤
-   │ WRITE  inject_extraction_trigger│  if DP_WRITE_TEST: append extraction
-   │        (DP_WRITE_TEST)          │  instruction (same primitive as READ)
-   └─────────────────────────────────┘
-       │
-       ▼
-   adapter.from_normalized()  ← model-aware wire-format decision happens HERE
-       │
-       ▼
-   forward to UPSTREAM
-       │
-       ├── stream=false ──► parse JSON → log usage → WRITE apply → CHECK restore
-       │
-       └── stream=true ───► relay chunks IMMEDIATELY
-                            (side-buffer for usage/WRITE only)
-                            → log usage → WRITE apply
+POST /{path}
+   │
+   ├─ detect()                    tier 1: path /v1/messages · tier 4: model "claude-*"
+   │     └─ None  ──────────────► passthrough_raw()  byte-identical, no mutation
+   │
+   ├─ adapter.to_normalized()     wire JSON → NormalizedRequest
+   │                              (also parses session_id / account_uuid — G1)
+   │
+   ├─ CHECK  check.scan()         redact sk-test-… → ⟦SECRET_n⟧
+   │         pii.scan()           redact PII       → ⟦PII_n⟧
+   │                              both mint per UNIQUE VALUE, into one vault
+   │
+   ├─ READ   flows.handle_read()  ESDS_SEARCH only, in the last genuine human turn
+   │           ├─ identity.resolve(account_uuid)   unknown ⇒ FAIL CLOSED, no bus call
+   │           ├─ GET /v1/search                   bus enforces visibility
+   │           ├─ scan_text() each document        ◄── retrieved content is DLP-scanned
+   │           └─ add_context(rendered)                BEFORE it is injected
+   │
+   ├─ WRITE  flows.handle_write_request()
+   │           ├─ drain queued writes for this session   (G8)
+   │           ├─ ESDS_APPROVE ⇒ POST /v1/ingest   ◄── the only bus write in the codebase
+   │           ├─ ESDS_REJECT  ⇒ discard pending
+   │           └─ ESDS_SUBMIT  ⇒ mint pending_id, inject extraction instruction
+   │
+   ├─ AWARENESS flows.handle_awareness()   only if no marker fired; titles only
+   │
+   ├─ adapter.from_normalized()   NormalizedRequest → wire JSON
+   │                              (re-emits the ORIGINAL message list untouched
+   │                               when no policy mutated it — GT fidelity)
+   │
+   ├─ forward ──────────────────► upstream
+   │
+   ├─ non-streaming:  parse_response_json → restore → JSONResponse
+   └─ streaming:      relay()
+           ├─ tee(aiter_raw)  ──► raw bytes into parse_buf   ◄── never the restored ones
+           ├─ _restore_sse_stream → yield to client immediately
+           └─ after the stream: log usage, capture any WRITE draft
 ```
 
-**Ordering detail worth knowing:** on both paths, `WRITE.apply()` runs *before*
-`CHECK.restore()`, so the extractor sees **redacted** text. A secret therefore
-cannot be captured into a passport. This is the right behaviour; see §8 for the
-one configuration where it does not hold.
+Two orderings here are load-bearing and neither is obvious:
 
----
+1. **Retrieved documents are scanned specifically, not by moving the global CHECK.**
+   Moving CHECK below READ would re-scan the whole conversation every turn and
+   double-redact already-tokenized text. Instead `flows._scan_hits()` scans the
+   retrieved records into the *same* vault, so the response restorer covers them.
+2. **The streaming side buffer tees raw bytes.** `parse_buf` feeds the usage log and
+   the WRITE draft extractor. When it accumulated from the *restored* stream, an
+   approved draft would have carried real secret values into the Context Bus.
 
 ## 4. Module map
 
-| File | Owns | May know about wire formats? |
+```
+gateway/
+  app.py                 the pipeline. transport + orchestration only.
+  flows.py               READ / AWARENESS / WRITE orchestration. The ONLY place
+                         that does bus I/O. `bus` is injectable for tests.
+  bus_client.py          REST client for the Context Bus. Not MCP — that server is
+                         stdio, one identity per process, wrong shape for a proxy.
+  pending.py             drafts awaiting human approval. Nothing here can write to
+                         the bus; only the approval path can.
+  failure.py             the failure policy as a TABLE (Flow × Failure → Disposition),
+                         exhaustive by test.
+  protocol/
+    normalized.py        NormalizedRequest/Message/Response. `extra` round-trips
+                         every key the adapter doesn't model; `metadata` is
+                         gateway-internal and never reaches the wire.
+    detect.py            which adapter, or None (⇒ fail open)
+    anthropic_adapter.py the ONLY wire-format-aware code
+  policies/
+    check.py             test-secret detector + restore() + StreamRestorer
+    pii.py               the real detector suite (regex + checksums + JSON fields)
+    read.py              pure: human-turn predicate, renderers, relevance floors
+    markers.py           positional marker authorization (all four markers)
+    identity.py          account_uuid → bus identity. Unknown ⇒ None ⇒ fail closed.
+    write.py             pure: extraction instruction, draft parsing, validation,
+                         sensitivity_flags derivation
+  tests/                 141 tests, no services required
+```
+
+**A wire-format string appearing in `gateway/policies/` is a defect.** The policies
+operate on `NormalizedRequest` only; `anthropic_adapter.py` owns every Anthropic-ism.
+`flows.py` is the deliberate exception for I/O, not for wire formats.
+
+## 5. The policies
+
+### CHECK — the border (`policies/check.py`, `policies/pii.py`)
+
+Scans **every** request unconditionally. Two suites share one vault on disjoint
+prefixes (`⟦SECRET_n⟧` / `⟦PII_n⟧`) so a single `StreamRestorer` restores both.
+
+Tokenise-and-restore, not `[REDACTED]`. Four rules: preserve type, preserve
+coreference (same value ⇒ same token, always), preserve the semantically-loaded
+part, restore on the way back. A model can still reason about "the key" without
+ever seeing it, because a secret is random and random carries no meaning to
+reason from.
+
+`pii.py` covers email, PAN (holder-type gated), GSTIN (mod-36), IFSC, card
+(Luhn), Aadhaar (Verhoeff), ISO dates, self-introduced names, phone numbers via
+`phonenumbers`, plus a JSON field-name pass. It walks text blocks, nested
+`tool_result` content, **and `tool_use.input`** — outbound tool arguments are a
+third payload shape, and they leaked before that branch existed.
+
+Reach is now identical across both suites: `check.py` was backported with the
+same recursion and the same per-unique-value dedup ledger.
+
+### READ — retrieval and awareness (`policies/read.py`, `flows.py`)
+
+Two distinct operations, deliberately separated:
+
+| | Awareness | Retrieval |
 |---|---|---|
-| `gateway/app.py` | HTTP surface, pipeline order, streaming relay, header handling, usage logging | Minimal |
-| `gateway/protocol/detect.py` | Which adapter handles this request (path → schema → structure → model string) | Yes |
-| `gateway/protocol/normalized.py` | `NormalizedRequest` / `NormalizedMessage` / `NormalizedResponse` | N/A (the vocabulary itself) |
-| `gateway/protocol/anthropic_adapter.py` | Every Anthropic wire detail, including model gating and SSE parsing | **Yes — the only place** |
-| `gateway/policies/check.py` | DLP: redact → vault → restore (incl. `StreamRestorer`) | **No** |
-| `gateway/policies/read.py` | Human-turn detection, context injection | **No** |
-| `gateway/policies/write.py` | Extraction trigger, marker parsing, pending-review sink | **No** |
-| `gateway/tap.py` | T0 capture-only server (does not forward) | N/A |
+| Trigger | automatic, genuine human turn | explicit `ESDS_SEARCH` |
+| Payload | titles + count | full records |
+| Distance ceiling | 0.62 | 1.0 |
+| Timeout | 300 ms | 3 s |
+| On failure | silent | logged |
 
-**The architectural rule:** policies operate only on normalized types. If you
-find `"anthropic"`, `cache_control`, or `content_block_delta` inside
-`gateway/policies/`, that is a defect regardless of whether it works.
+The floors differ on purpose. Under an explicit search the human asked, sees the
+results, and can retype — a miss is recoverable. Awareness fires unprompted and
+cannot be corrected, so it must be stingy. Zero results is a correct answer;
+injecting nothing is right.
 
-### The normalized layer, and why it is not over-engineering
-
-`NormalizedRequest` deliberately reuses **Anthropic's** block vocabulary
-(`text` / `tool_use` / `tool_result`) rather than inventing neutral synonyms.
-Anthropic already models tool interaction *as content*, which is the property
-worth making canonical. The consequence: `AnthropicAdapter` is close to an
-identity transform, and a future OpenAI adapter — which models tool calls as a
-separate `tool_calls` field plus `role:"tool"` messages — carries the whole
-translation cost. Work is pushed onto the adapter that actually needs to do it.
-
-`NormalizedRequest.extra` preserves every field the adapter did not model
-explicitly (`max_tokens`, `tools`, `thinking`, `output_config`, beta fields…) so
-`from_normalized()` round-trips losslessly. This is what stops the gateway
-silently dropping request fields it does not recognise.
-
----
-
-## 5. The three policies
-
-### CHECK — the border (`policies/check.py`)
-
-Runs **unconditionally on every request**, not behind a flag. Walks every text
-block in messages and in `system` (both string and list forms), replaces matches
-with an opaque token, and returns a vault mapping `token → real value`.
+### WRITE — draft, validate, **approve**, ingest (`policies/write.py`, `pending.py`)
 
 ```
-outbound:  AWS_KEY = "sk-test-abc123xyz"   →   AWS_KEY = "⟦SECRET_1⟧"
-inbound:   "…the key ⟦SECRET_1⟧ is hardcoded"  →  "…the key sk-test-abc123xyz is hardcoded"
+ESDS_SUBMIT (human turn)  →  mint pending_id, inject extraction instruction
+model replies             →  fenced ```json block, streamed VISIBLY to the user
+gateway                   →  validate against /v1/ingest's contract
+                          →  DLP-scan → derive sensitivity_flags
+                          →  park in pending.  NOTHING IS SENT.
+ESDS_APPROVE <id>         →  POST /v1/ingest with an Idempotency-Key
 ```
 
-The design principle is **tokenise, don't delete**. A blunt `[REDACTED]` destroys
-the model's ability to reason; a typed, stable token does not, because a secret's
-bytes are high-entropy and carry no meaning to reason from. Type preservation,
-coreference, and restore are what make this lossless — see §8 for where the
-current implementation falls short of that.
+**Validation is not approval.** A schema-valid, DLP-clean, correctly-attributed
+draft still stops at the pending store. There is exactly one `bus.ingest()` call
+in the codebase and it is reachable only from a human's own `ESDS_APPROVE`.
 
-Restoring on a **stream** is harder than on JSON, because a token can split
-across SSE chunk boundaries (`…⟦SECRET_` in one chunk, `1⟧…` in the next).
-`StreamRestorer` holds back the longest suffix that could still be the start of
-a token and releases it once it is known not to be. This path is opt-in
-(`DP_CHECK_RESTORE_STREAM=1`) so the default relay stays byte-for-byte
-unmodified.
+The pending id is minted **before** the model replies and the model is told to
+print it. A proxy cannot push; revealing the id on the next request would make a
+write take three turns, the middle one existing only to be told what to type.
 
-### READ — retrieval and injection (`policies/read.py`)
-
-Two responsibilities:
-
-**Turn detection.** `is_new_human_turn()` must distinguish a person asking
-something from the agent looping through tool calls. A user message whose content
-is entirely `tool_result` blocks is a loop hop — injecting there repeats the same
-context on every hop of a multi-step tool call.
-
-It also **looks through one trailing `role:"system"` message**, because real
-Claude Code traffic routinely appends its own system message (agent list, skills,
-hook output) *after* the human turn. Without this, injection silently never fires
-on real traffic while passing every synthetic fixture. That was a real bug, found
-against real traffic — see `docs/WIRE-FINDINGS.md`.
-
-**Injection.** `add_context()` appends a `role="system"` message *in the
-normalized representation*. That is an abstract marker meaning "authoritative,
-injected context" — **it does not promise a literal `role:"system"` on the wire.**
-
-**Retrieval is not implemented.** `DP_INJECT` / `DP_INJECT_TEXT` stand in for
-"the retrieval step decided this document is relevant."
-
-### WRITE — extraction and the approval gate (`policies/write.py`)
-
-Appends an instruction asking the model to end its reply with
-`EXTRACTED_DECISION: <one-sentence summary>`, then parses that marker out of the
-response and writes it to `/tmp/dp_pending_review/<ts>.json` with
-`"status": "pending_review"`.
-
-Two deliberate shortcuts from the real design:
-
-1. Real extraction is **asynchronous**, off the request's critical path, using
-   the org's own credential. The gateway runs in relay mode and holds no
-   credential, so extraction rides in the *same* request instead — one round
-   trip, not a separate call.
-2. "User confirms" is stubbed as "written to a pending file rather than
-   published." There is no review UI. The only claim being proven is that
-   **nothing publishes without a gate in between.**
-
-The gate is not a nicety. Nobody hands their sessions to a company brain unless
-they can see what leaves — approval is what makes the product adoptable, and it
-is the second reason it is not merely a nice-to-have: unreviewed extraction fills
-the brain with the model's guesses, and one bad week destroys trust in every
-passport.
-
----
+Fields the model may not choose: `session_id` and identity come from the adapter
+and the bearer token; `visibility` defaults to `team` and only the human may
+widen it at approval time. `--visibility orgg` falls back to `team`, never `org`.
 
 ## 6. The injection point, and the model-gating fallback
 
@@ -275,128 +266,110 @@ serves WRITE's extraction trigger for free.
 ### Running it
 
 ```bash
-cd /home/sahaj/Projects/hackathon_agent_layer
-.venv/bin/uvicorn gateway.app:app --port 8080
+# the Context Bus must be up first — see store/docs/data-passport-setup.md
+.venv/bin/python -m uvicorn gateway.app:app --port 8080
 
 # separate terminal — NOT exported
 ANTHROPIC_BASE_URL=http://localhost:8080 claude
 ```
 
-> **Never `export ANTHROPIC_BASE_URL`** in a shell you also use for other Claude
-> Code work. It redirects *all* of that shell's traffic for as long as it is set.
+> **Never `export ANTHROPIC_BASE_URL`** into a shell you also use for other Claude
+> Code work — it redirects everything that shell does for as long as it is set.
 
 ### Auth: relay mode
 
-The gateway holds **no credential of its own**. It forwards whatever
-`Authorization` / `x-api-key` / `anthropic-beta` headers the client already sent,
-unmodified. Production `dp_*` key issuance (`ARCHITECTURE.md` §2.0) is not built.
-
-Consequence for testing: a captured fixture replayed with `curl` carries no auth
-and will 401 against the real API. Use a stub upstream — see the QA guide.
+The gateway holds **no credential of its own** for the upstream — it forwards the
+client's `Authorization` / `x-api-key` headers unmodified. It *does* hold a bus
+token per developer, resolved from `account_uuid` via `store/config/account_map.json`.
+An unknown account resolves to `None`, and every bus-touching path treats `None` as
+fail-closed. Never invent a default token: that hands one user another's records.
 
 ### Environment variables
 
-| Variable | Default | Effect |
+| Var | Default | Effect |
 |---|---|---|
-| `DP_INJECT` | `0` | `1` enables READ injection |
-| `DP_INJECT_TEXT` | `Always end your reply with 🛂` | Text the READ policy injects |
-| `DP_WRITE_TEST` | `0` | `1` appends the WRITE extraction instruction |
-| `DP_CHECK_RESTORE_STREAM` | `0` | `1` restores redacted tokens on the SSE path |
-| `DP_DEBUG_LOG_OUTBOUND` | `0` | `1` writes outbound payload to `/tmp/dp_outbound_debug_<pid>_<n>.json` and prints a `[DIAG]` line |
-| `DP_ARM_LABEL` | `""` | Free-text tag written into each usage-log line |
-| `DP_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | Point at a stub for testing |
+| `DP_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | upstream override (testing) |
+| `DP_CHECK_RESTORE_STREAM` | **`1`** | streaming restoration. `0` gives the old byte-identical relay for a fidelity measurement. No-op when nothing was redacted |
+| `DP_INJECT` / `DP_INJECT_TEXT` | `0` | legacy injection scaffolding, kept alive for T2/T4 |
+| `DP_BUS_BASE_URL` | `http://127.0.0.1:8000` | Context Bus |
+| `DP_BUS_TIMEOUT` / `DP_BUS_INGEST_TIMEOUT` | `3.0` / `10.0` | per-call timeouts |
+| `DP_IDENTITY_MAP` | `store/config/account_map.json` | account → bus identity |
+| `DP_SEARCH_LIMIT` / `DP_SEARCH_MAX_DISTANCE` | `5` / `1.0` | retrieval |
+| `DP_AWARENESS` | `0` | enable the awareness probe |
+| `DP_AWARENESS_TIMEOUT` / `_COOLDOWN` / `_LIMIT` / `_MAX_DISTANCE` | `0.3` / `300` / `3` / `0.62` | awareness tuning |
+| `DP_PENDING_DIR` | `/tmp/dp_pending` | drafts awaiting approval |
+| `DP_WRITE_MAX_RETRIES` | `2` | bounded side-call retries for an invalid draft |
+| `DP_DRAIN_ON_REQUEST` | `1` | retry writes queued while the bus was down |
+| `DP_DEBUG_LOG_OUTBOUND` | `0` | **test-only** — writes outbound payloads to `/tmp` in plaintext |
+| `DP_ARM_LABEL` | `""` | tag in each usage-log line |
 
-> `DP_DEBUG_LOG_OUTBOUND` writes the **post-redaction** payload — proving the real
-> secret is absent is the point — but any *other* sensitive content in the request
-> lands in `/tmp` in plaintext. Test-only.
+`DP_WRITE_TEST` is **gone**. G6 gates the extraction instruction on `ESDS_SUBMIT`
+in a genuine human turn instead of an env flag.
 
 ### Artefacts written
 
-| Path | Written by | Notes |
-|---|---|---|
-| `docs/usage_log.jsonl` | every request with usage | append-only; `{ts, model, injected, arm_label, usage}` |
-| `fixtures/*.json` | `tap.py` | **gitignored** — may contain real secrets from `tool_result` blocks |
-| `/tmp/dp_pending_review/*.json` | WRITE policy | `status: pending_review`, never auto-published |
-| `/tmp/dp_outbound_debug_*.json` | debug flag only | unique file per call, never appended |
+| Path | What |
+|---|---|
+| `docs/usage_log.jsonl` | one line per response: model, usage, whether injected |
+| `/tmp/dp_pending/*.json` | drafts awaiting approval. **Nothing here has reached the bus** |
+| `/tmp/dp_outbound_debug_*.json` | only when `DP_DEBUG_LOG_OUTBOUND=1` |
+| `fixtures/*.json` | captured request bodies — **gitignored, may hold real secrets** |
 
 ### Invariants that must not regress
 
-1. **Never whole-response-buffer the stream.** `yield chunk` happens inside the
-   `async for`, before the side-buffer append. If output arrives in one burst,
-   developers unset the env var and participation goes to zero — the product dies
-   at adoption, not at architecture.
-2. **Fail open.** Unrecognised protocol, non-JSON body, or any policy failure
-   forwards raw bytes untouched. The gateway must never be the reason a
-   developer's session breaks.
-3. **Never touch top-level `system`.** Cache-prefix preservation depends on it.
-4. **No credential in any log line.**
-5. **Policies stay wire-format-agnostic.**
-6. **The real upstream status code reaches the client**, including on the
-   streaming path (`app.py` uses `send(..., stream=True)` specifically so status
-   is known before committing to a `StreamingResponse`).
-
----
+1. **Fail open** on unrecognised protocol, non-JSON body, or bus failure — forward
+   raw bytes untouched. **Fail closed** on DLP failure and unknown identity.
+2. **Never whole-response-buffer.** `yield chunk` inside the `async for`.
+3. **The side buffer holds raw bytes**, never restored ones.
+4. **Markers are honoured by position**, never by presence.
+5. **No approval, no ingest.** One `bus.ingest()` call, reachable only from a human.
+6. **Never report success for a write that did not happen.** Queue and say so.
+7. The upstream key must never reach a log line.
 
 ## 8. Maturity — what is real, what is scaffolding
 
-Read this before believing any capability claim.
-
-| Capability | State | Gap to the design |
-|---|---|---|
-| Base-URL interception | **Working** | — |
-| Streaming relay, non-buffered | **Working** | Measured ≈0.5 ms added latency against a stub |
-| Byte-identical passthrough | **Working** | — |
-| Protocol detect + normalize | **Working** | Anthropic only; OpenAI adapter is stub tiers in `detect.py` |
-| Model-gated injection fallback | **Working** | — |
-| Tool-loop guard | **Working** | — |
-| Usage logging | **Working** | — |
-| CHECK detection | **Test-grade** | One hardcoded pattern `sk-test-[A-Za-z0-9]{10,}`. Real suite (AWS, JWT, PAN, Aadhaar, entropy) not built |
-| CHECK restore, non-streaming | **Working** | — |
-| CHECK restore, streaming | **Opt-in** | Off by default; boundary handling implemented but lightly exercised |
-| WRITE extraction | **Test-grade** | Same-request, marker-parsed. Not async, no structured output, no dedup |
-| Approval gate | **Stubbed** | A file with `pending_review`. No queue, no UI |
-| Retrieval / embeddings / Postgres | **Not built** | `DP_INJECT_TEXT` stands in for the whole retrieval step |
-| Contradiction detection | **Not built** | The differentiating demo; `ARCHITECTURE.md` §4.3 |
-| Identity / `dp_*` key issuance | **Not built** | Relay mode instead |
-| Second wire format (OpenAI) | **Not built** | `detect.py` tiers 2–3 are comment stubs |
+| Area | State |
+|---|---|
+| Base-URL interception, non-buffered SSE relay | **working** |
+| protocol detect → normalized → adapter | **working** |
+| Model-gated injection + `<system-reminder>` fallback | **working** |
+| Session / account identity from request metadata | **working** |
+| Positional marker authorization (4 markers) | **working** |
+| PII + secret detection, tokenise-and-restore, streaming restore | **working** |
+| Retrieval behind `ESDS_SEARCH`, with retrieved-content DLP | **working** |
+| Awareness probe | **working**, off by default |
+| Write path with human approval gate + idempotency | **working** |
+| Failure table + queued-write drain | **working** |
+| Contradiction detection | **not built** — the schema hook exists (`links[].type` has `contradicts`/`supersedes`) |
+| Dashboard / admin UI | **not built** — belongs on the store |
+| OpenAI adapter | **not built** — `detect.py` tiers 2–3 are deliberate stubs |
+| `dp_*` key issuance | **not built** — `account_map.json` is the stand-in |
+| Tier-2 (network-level + corporate CA) deployment | **not built** |
 
 ### Known issues and open questions
 
-1. **Coreference is not preserved in CHECK.** `_redact_text` mints a fresh token
-   per *match*, not per *value* — the same secret appearing three times becomes
-   `⟦SECRET_1⟧`, `⟦SECRET_2⟧`, `⟦SECRET_3⟧`. The model can then no longer tell it
-   is one key, which is often exactly the reasoning that was needed. Fix: key the
-   vault by value. *(Low effort, real correctness impact.)*
-2. **Restore-on-stream leaks real secrets into WRITE.** With
-   `DP_CHECK_RESTORE_STREAM=1`, `parse_buf` accumulates from the *restored*
-   stream, so the extractor sees real values — silently inverting the safe
-   ordering described in §3. Fix: side-buffer from the raw source regardless of
-   restore mode.
-3. **UTF-8 chunk boundaries.** `chunk.decode("utf-8", errors="ignore")` can drop
-   a character if a chunk splits a multi-byte codepoint — and the redaction token
-   uses `⟦` (U+27E6, 3 bytes). Needs a deliberate probe.
-4. **No stable conversation identifier** found in captured traffic. Session
-   attribution and end-of-session extraction both want one. Candidate approach:
-   fingerprint by hashing the first N messages — a request whose `messages` array
-   extends a seen one is the same session. *Not budgeted yet.*
-5. **Claude Code sends its own `role:"system"` message** on `claude-sonnet-5`.
-   Whether the real API accepts that is unresolved; `tap.py` never forwards, so
-   the fixture proves willingness to send, not acceptance.
-6. **`cache_control` budget is nearly full.** Real traffic already places 3 of the
-   API's 4 breakpoints on a *short* conversation. The `ARCHITECTURE.md` §2.2a
-   fallback of placing the gateway's own breakpoint should not be assumed
-   available without checking per request.
-7. **Injection quality is unmeasured.** Redaction removes bytes that carry no
-   meaning; bad retrieval *adds* meaning that is wrong, with no error flag and no
-   attribution. A relevance floor — inject nothing below a similarity threshold —
-   is a required part of the read path, not an optimisation.
-
----
+1. **`detect.py` matches `startswith("/v1/messages")`**, so `/v1/messages/count_tokens`
+   is also normalized and policy-mutated — token counts would include injected context.
+2. **The invariant is enforced by omission.** The harness executes MCP tool calls
+   locally; they never reach the model API, so the gateway is structurally blind to
+   them. The honest claim is "nothing confidential leaves through the model API".
+3. **The bus computes embeddings synchronously inside async handlers**
+   (`store/backend/app/serving.py:110`), so every `/v1/search` blocks its event loop.
+   The awareness probe issues one per human turn per developer — keep the timeout and
+   cooldown as they are.
+4. **HNSW-before-visibility gap** in `/v1/search`: a permitted record can be silently
+   absent. Documented and accepted upstream; do not "fix" with an unindexed scan.
+5. **`"name"` was removed from the PII JSON field list** to stop it redacting tool
+   metadata like `{"name": "create_ticket"}`. Consequence: a genuine
+   `{"name": "Rohan Mehta"}` in a `tool_result` is now caught only if the free-text
+   name regex fires.
+6. **Queued writes for a session that never returns** stay queued until someone runs
+   `scripts/drain_queue.py`. The opportunistic drain only covers returning sessions.
 
 ## 9. Where to start reading
 
-- **Understanding the bet:** `ARCHITECTURE.md` §0, then `TEST-PLAN.md` §Context.
-- **Understanding the code:** `gateway/app.py::proxy` top to bottom — it is 90
-  lines and the whole pipeline is visible in one function.
-- **Understanding what real traffic looks like:** `docs/WIRE-FINDINGS.md`.
-- **Testing it:** `docs/QA-TEST-GUIDE.md`.
+1. `gateway/app.py` — the whole pipeline in one function.
+2. `gateway/flows.py` — the three flows, and the ordering rule stated once.
+3. `gateway/policies/markers.py` — the security predicate everything else reuses.
+4. `TESTING.md` — how to run any of it.
+5. `docs/QA-TEST-GUIDE.md` — the tester-facing case list.

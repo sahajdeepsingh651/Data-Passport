@@ -23,7 +23,7 @@ def detect(request: Request, body: dict | None):
     """Return an adapter instance for this request, or None if unrecognized.
 
     None means: do not normalize, do not mutate — the caller must fail open
-    and forward the raw bytes untouched. This extends ARCHITECTURE.md
+    and forward the raw bytes untouched. This extends docs/ARCHITECTURE.md
     §2.6's fail-open principle (any Context Bus failure -> forward
     unmodified) to a new failure mode: an unrecognized wire protocol.
     """

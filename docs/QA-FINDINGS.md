@@ -1,5 +1,19 @@
 # QA findings — gateway (Track A, stub upstream)
 
+
+> **STATUS UPDATE (2026-08-09).** This file is the record of a QA run against the
+> *pre-G4* gateway; the steps below reference `DP_WRITE_TEST` and
+> `EXTRACTED_DECISION:`, neither of which exists any more. Kept as history, not as
+> instructions — the current cases are in `docs/QA-TEST-GUIDE.md`.
+>
+> | Finding | Now |
+> |---|---|
+> | #1 passthrough not byte-identical | **Fixed** (GT) — the adapter re-emits the original message list when no policy mutated it. Covered by `gateway/tests/test_gt_passthrough.py`. |
+> | #2 WRITE gate untestable against the stub | **Fixed** (G0c) — `scripts/stub_upstream.py` gained `DP_STUB_MODE=verbatim` and `draft`. The write path is now the W-series, and the stop-ship case is `test_g6_write.py::test_STOPSHIP_no_approval_means_no_ingest`. |
+> | #3 coreference (repeated secret ⇒ two tokens) | **Fixed** (GP) — `check.py` was backported with `pii.py`'s per-unique-value dedup ledger. |
+> | #4 UTF-8 chunk boundary did not reproduce | **Hardened anyway** (G7) — the restore path now uses an incremental decoder instead of per-chunk `errors="ignore"`. |
+
+
 Source: full run of `docs/QA-TEST-GUIDE.md` Track A against `gateway/app.py`
 (stub upstream on :9090, gateway on :8080). Ordered most severe first.
 Severity labels follow the guide's own scale (§5): critical > high > medium > low.

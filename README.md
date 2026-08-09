@@ -1,93 +1,187 @@
-# Vector-Lab
+# Data Passport
 
+**One organisational brain for every AI session — and one checkpoint that stops
+confidential data leaving through AI prompts.**
 
+Two problems, one mechanism:
 
-## Getting started
+- Knowledge that should move across a team doesn't. Arjun can't ask for what
+  Priya learned last month, because he doesn't know it exists.
+- Data that shouldn't move does. Credentials and personal data leave through AI
+  prompts — usually not typed by a human, but read out of a file by an agent.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Data Passport puts an interceptor between every AI coding session and the model
+API. It redacts on the way out and restores on the way back, retrieves colleagues'
+prior sessions when asked, and lets a session be saved to a shared Context Bus —
+**but only after a human approves exactly what will be stored.**
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+The developer changes one environment variable and nothing else:
 
-## Add your files
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8080 claude
+```
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+Their tool, commands, and workflow are unchanged.
+
+---
+
+## What it looks like
 
 ```
-cd existing_repo
-git remote add origin https://git.enlight.dev/Padmaj.Kabra/vector-lab.git
-git branch -M main
-git push -uf origin main
+1. > how should we handle push notification retries?
+
+   [the gateway notices 3 related sessions exist and says so — titles only]
+
+2. > ESDS_SEARCH push notification retries
+
+   [Priya's session from last month is retrieved, DLP-scanned, and injected.
+    A record you aren't allowed to see is never returned — the bus enforces
+    visibility against your identity, not the gateway.]
+
+3. > ESDS_SUBMIT
+
+   [Claude drafts the record. The gateway validates it, redacts anything
+    sensitive, and shows you exactly what would be stored:]
+
+     ESDS Data Passport — draft a3f9c1d2 is PENDING YOUR APPROVAL.
+     Nothing has been written to the Context Bus.
+       title      Push retry policy
+       summary    Exponential backoff, capped at 30s...
+       visibility team
+       redaction  1 value(s) removed (credentials=True)
+
+4. > ESDS_APPROVE a3f9c1d2 --visibility org
+
+   [now it is saved, and a colleague on another team can find it]
 ```
 
-## Integrate with your tools
+At no point can the AI write to organisational memory on its own. There is exactly
+one call to the bus's ingest endpoint in the codebase, and it is reachable only
+from a human typing `ESDS_APPROVE` in their own turn.
 
-- [ ] [Set up project integrations](https://git.enlight.dev/Padmaj.Kabra/vector-lab/-/settings/integrations)
+## Architecture
 
-## Collaborate with your team
+```
+  developer laptop                          shared VM
+  ┌──────────────────────┐                 ┌───────────────────────────┐
+  │ Claude Code          │                 │  Context Bus  :8000       │
+  │   ANTHROPIC_BASE_URL │                 │   FastAPI + asyncpg       │
+  │        ↓             │                 │   fastembed (on-premise)  │
+  │ Interceptor :8080    │──── HTTP(S) ───▶│                           │
+  │   DLP, markers,      │   /v1/search    │  Postgres + pgvector :5433│
+  │   approval gate      │   /v1/ingest    │                           │
+  └──────────┬───────────┘                 └───────────────────────────┘
+             ▼
+      api.anthropic.com
+```
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+| Component | Owns |
+|---|---|
+| **Human** | intent, and approval of every write |
+| **AI harness** | interaction and drafting — never persistence |
+| **Interceptor** (`gateway/`) | DLP, redaction/restoration, marker authorization, identity, write validation, approval, `sensitivity_flags` |
+| **Context Bus** (`store/`) | persistence, semantic search, visibility/access control, handoff, audit — and stays deliberately blind to PII |
 
-## Test and Deploy
+The bus never receives raw PII, by design: redaction happens on the endpoint, so
+the privacy claim is structurally true rather than policy-enforced. That is
+precisely why the interceptor must run on the developer's machine and not on the
+VM — see `docs/ARCHITECTURE.md`.
 
-Use the built-in continuous integration in GitLab.
+## Quickstart
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Requires Python 3.11+ and Docker.
 
-***
+```bash
+# 1. gateway
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp store/config/account_map.example.json store/config/account_map.json
+#    then put YOUR account_uuid in it — see that file's comment for how to find it
 
-# Editing this README
+# 2. Context Bus
+cd store
+cp .env.example .env
+cp config/api_tokens.example.json config/api_tokens.json
+docker compose up -d
+cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
+set -a; source ../.env; set +a
+.venv/bin/python db/migrate.py
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+# 3. gateway, in another terminal
+.venv/bin/python -m uvicorn gateway.app:app --port 8080
 
-## Suggestions for a good README
+# 4. a session through it — NEVER export this variable
+ANTHROPIC_BASE_URL=http://localhost:8080 claude
+```
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Do not add `--reload` to the bus; its file watcher can serve stale code silently.
 
-## Name
-Choose a self-explaining name for your project.
+## Testing
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+```bash
+.venv/bin/python -m pytest gateway/tests -q              # 141 tests, no services needed
+.venv/bin/python -m pytest gateway/tests -q -k STOPSHIP  # the one that matters most
+.venv/bin/python scripts/e2e/e2e_write.py                # the demo, automated (needs the bus)
+```
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+The stop-ship test asserts that a draft which was never approved produces **zero**
+calls to `/v1/ingest`. If it goes red, the project's central claim is false.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Full guide: [`TESTING.md`](TESTING.md). Tester-facing case list:
+[`docs/QA-TEST-GUIDE.md`](docs/QA-TEST-GUIDE.md).
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Layout
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```
+gateway/            the interceptor
+  app.py            the pipeline — transport and orchestration only
+  flows.py          READ / AWARENESS / WRITE; the only place that talks to the bus
+  bus_client.py     REST client for the Context Bus
+  pending.py        drafts awaiting human approval (cannot write to the bus)
+  failure.py        failure policy as an exhaustive table
+  protocol/         normalized request/response + the Anthropic adapter
+  policies/         check, pii, read, markers, identity, write — all wire-agnostic
+  tests/            141 tests, no services required
+store/              the Context Bus (Postgres + pgvector + FastAPI + MCP read server)
+scripts/            stub upstream, queue drain, live end-to-end acceptance
+docs/               architecture, QA guide, findings, submissions
+fixtures/           sanitised sample captures (real ones are gitignored)
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## Security notes
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+This repo is about preventing leaks, so it holds itself to the same standard.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+- **Never `export ANTHROPIC_BASE_URL`.** Prefix it onto a single command; exporting
+  redirects every Claude Code session in that shell.
+- **`fixtures/*` is gitignored except the `sample_*` files.** A real capture holds
+  your `account_uuid`, `device_id`, `session_id`, and anything the agent had read
+  into a `tool_result` — which is exactly the leak this project exists to stop.
+- **`store/config/api_tokens.json` and `account_map.json` are gitignored.** Copy the
+  `.example.json` files and fill in your own.
+- **`DP_DEBUG_LOG_OUTBOUND=1` is test-only** — it writes request payloads to `/tmp`
+  in plaintext.
+- Use the fake `sk-test-…` shape in tests. Never a real credential.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+## Honest boundaries
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+- Interception covers **the model API**, not "AI" in general. MCP tool calls are
+  executed locally by the harness and never reach `api.anthropic.com`, so the
+  gateway is structurally blind to them. MCP is therefore kept **read-only**.
+- Browser sessions (claude.ai, chatgpt.com) cannot be redirected at all.
+- The Context Bus trusts the endpoint's `sensitivity_flags` without verifying them.
+  That is a deliberate trade — the server never receives raw PII, so it cannot
+  verify, and it cannot leak. The audit log records *who asserted* each flag.
+- Built for a hackathon. Identity is a static token map, not SSO.
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+## Documentation
 
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+| Doc | What |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | the intended system |
+| [`docs/GATEWAY-OVERVIEW.md`](docs/GATEWAY-OVERVIEW.md) | what the gateway does today, with a maturity table |
+| [`TESTING.md`](TESTING.md) | how to run everything |
+| [`docs/QA-TEST-GUIDE.md`](docs/QA-TEST-GUIDE.md) | tester-facing cases |
+| [`docs/WIRE-FINDINGS.md`](docs/WIRE-FINDINGS.md) | what real traffic actually looks like |
+| [`store/README.md`](store/README.md) | the Context Bus |
+| [`store/docs/decisions-log.md`](store/docs/decisions-log.md) | every design decision, with rejected alternatives |

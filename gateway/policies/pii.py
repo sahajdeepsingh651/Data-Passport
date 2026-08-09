@@ -1,4 +1,4 @@
-"""PII policy: the Day-2 DLP detector suite ARCHITECTURE.md §5 and check.py's
+"""PII policy: the Day-2 DLP detector suite docs/ARCHITECTURE.md §5 and check.py's
 own docstring say hasn't been built yet. check.py exists to prove the
 tokenize/restore MECHANISM with one deliberately fake, low-risk pattern
 (`sk-test-...`); this module is the first real detector suite on top of
@@ -45,7 +45,7 @@ This module's job is narrower than that one (redact-before-send,
 restore-after-receive for a live proxy, not classify-and-score-and-decide
 for an offline scanner), and the explicit ask was to keep the connector
 lightweight — no model calls of any kind in this path. See
-PII-CAPABILITIES.md for what got adopted, what didn't, and why.
+docs/PII-CAPABILITIES.md for what got adopted, what didn't, and why.
 
 A checksum gate changes free-text matching, deliberately: an
 Aadhaar/PAN/GSTIN/card-shaped run of characters in prose only gets
@@ -159,7 +159,7 @@ _PATTERNS: tuple[tuple[re.Pattern, object], ...] = (
     (re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b"), _gstin_valid),                # GSTIN
     (re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b"), None),                                           # IFSC (no checksum exists)
     (re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)"), _luhn_ok),                                # card (13-19 digits)
-    (re.compile(r"\b\d{4}\s\d{4}\s\d{4}\b"), _aadhaar_valid),                                   # Aadhaar
+    (re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"), _aadhaar_valid),                                 # Aadhaar (space, dash, or bare 12 digits — Verhoeff gate filters false positives)
     (re.compile(r"\b\d{4}-\d{2}-\d{2}\b"), None),                                              # ISO date / DOB
     (re.compile(r"(?:[Mm]y name is|[Ii] am|[Ii]'m)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)+)"), None),  # self-introduced name
 )
@@ -168,9 +168,15 @@ _PATTERNS: tuple[tuple[re.Pattern, object], ...] = (
 # of the value's shape. This is the only way to catch `address` /
 # `full_name` — no generic pattern exists for either.
 _SENSITIVE_JSON_FIELDS = {
-    "full_name", "name", "dob", "pan_number", "aadhaar_number",
+    "full_name", "dob", "pan_number", "aadhaar_number",
     "bank_account", "address", "phone", "email", "emergency_contact",
 }
+# Note: `_redact_blocks`'s tool_use branch recurses into `input` with this
+# field pass. A bare "name" was previously in this set but it redacts tool
+# metadata like {"name": "create_ticket"} as if it were a secret — tool_use
+# `input` routinely carries a {"name": ...}/{..."name":<model>} key, so it
+# was more noise than signal. self-introduced names ("my name is X") are
+# still caught by the free-text regex pass below.
 
 
 def _mint_token(value: str, vault: dict, value_to_token: dict) -> str:
@@ -231,15 +237,42 @@ def _apply_patterns(text: str, vault: dict, value_to_token: dict) -> str:
 
 def _redact_json_value(obj, vault: dict, value_to_token: dict):
     if isinstance(obj, dict):
-        return {
-            k: (_mint_token(v, vault, value_to_token)
-                if k in _SENSITIVE_JSON_FIELDS and isinstance(v, str)
-                else _redact_json_value(v, vault, value_to_token))
-            for k, v in obj.items()
-        }
+        out = {}
+        for k, v in obj.items():
+            if k in _SENSITIVE_JSON_FIELDS:
+                if isinstance(v, (dict, list)):
+                    # structured value (address: {...}, emergency_contact: {...}) — recurse
+                    out[k] = _redact_json_value(v, vault, value_to_token)
+                    continue
+                coerced = _coerce_str(v)
+                if coerced is None:
+                    out[k] = v
+                else:
+                    out[k] = _mint_token(coerced, vault, value_to_token)
+            else:
+                out[k] = _redact_json_value(v, vault, value_to_token)
+        return out
     if isinstance(obj, list):
         return [_redact_json_value(v, vault, value_to_token) for v in obj]
     return obj
+
+
+def _coerce_str(v) -> str | None:
+    """Sensitive values arrive non-string ('phone': 9876543210) or as
+    structured containers. Tokenize whatever can be stringified in place
+    (a non-string scalar). Containers (dict/list) are handled by the
+    RECURSION in _redact_json_value, not here, so nested sensitive keys
+    inside address: {...} still match — and None stays None so the field
+    lives on the wire as null, not as a 'None' string. Returns False-
+    like for non-leaf containers, so callers recurse instead of minting
+    a token for the whole object (a previously-silent P3 bug)."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return str(v)
+    return None
 
 
 def _redact_text(text: str, vault: dict, value_to_token: dict) -> str:
@@ -251,7 +284,7 @@ def _redact_text(text: str, vault: dict, value_to_token: dict) -> str:
     except (json.JSONDecodeError, TypeError):
         parsed = None
     if isinstance(parsed, (dict, list)):
-        text = json.dumps(_redact_json_value(parsed, vault, value_to_token), indent=2)
+        text = json.dumps(_redact_json_value(parsed, vault, value_to_token), indent=2, ensure_ascii=False)
     return _apply_patterns(text, vault, value_to_token)
 
 
@@ -261,6 +294,12 @@ def _redact_blocks(blocks: list[dict], vault: dict, value_to_token: dict) -> lis
         block = dict(block)
         if block.get("type") == "text" and "text" in block:
             block["text"] = _redact_text(block["text"], vault, value_to_token)
+        elif block.get("type") == "tool_use" and isinstance(block.get("input"), dict):
+            # tool_use: argument JSON carries records">{...}{"full_name":...}.
+            # A shared endpoint-tool risk:** arguments leak upstream in clear
+            # text even when the same string was redacted elsewhere in the
+            # request. Recurse into `input` with the field-name pass.
+            block["input"] = _redact_json_value(block["input"], vault, value_to_token)
         elif "content" in block:
             # tool_result (and anything else shaped like it): the nested
             # content is where a tool call's returned record lives — the
@@ -272,6 +311,22 @@ def _redact_blocks(blocks: list[dict], vault: dict, value_to_token: dict) -> lis
                 block["content"] = _redact_blocks(nested, vault, value_to_token)
         out.append(block)
     return out
+
+
+def scan_text(text: str, vault: dict) -> str:
+    """Public text-level redactor (see G3): scan a bare string — not a
+    NormalizedRequest — against every PII detector here. Same contract as
+    check.scan_text: vault mutated in place so retrieved-context or
+    LLM-draft scanning lands in the token->value map the response restorer
+    already uses. REQUIRED for the G4 ordering fix (scan retrieved bus
+    documents before injection) and G6 (DLP-scan the LLM's draft before
+    producing sensitivity_flags) — both scan a free string, not a
+    NormalizedRequest, so they needed text-level access that scan() does
+    not expose."""
+    if not text:
+        return text
+    value_to_token = {v: k for k, v in vault.items() if k.startswith("⟦PII_")}
+    return _redact_text(text, vault, value_to_token)
 
 
 def scan(nr: NormalizedRequest) -> tuple[NormalizedRequest, dict]:
