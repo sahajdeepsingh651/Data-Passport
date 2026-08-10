@@ -70,7 +70,7 @@ export default function XRayMonitor() {
     
     return parts.map((part, i) => {
       if (part.startsWith('⟦SECRET_') || part.startsWith('⟦PII_')) {
-        return <span key={i} className="redacted-token-badge">{part}</span>;
+        return <span key={i} className="bg-primary-container text-on-primary-container font-bold px-1 rounded inline-block border border-primary/30 mx-1">{part}</span>;
       }
       return <span key={i}>{part}</span>;
     });
@@ -80,213 +80,94 @@ export default function XRayMonitor() {
   const sanitizedParts = extractImportantParts(liveData.sanitized?.messages);
 
   return (
-    <div>
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes pulseGlow {
-          0% { box-shadow: 0 0 15px rgba(0, 255, 157, 0.1); }
-          50% { box-shadow: 0 0 30px rgba(0, 255, 157, 0.3); }
-          100% { box-shadow: 0 0 15px rgba(0, 255, 157, 0.1); }
-        }
-        @keyframes flowRight {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 100% 50%; }
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .xray-container {
-          position: relative;
-        }
-        .bg-glow {
-          position: absolute;
-          top: 30%;
-          left: 50%;
-          width: 800px;
-          height: 400px;
-          transform: translate(-50%, -50%);
-          background: radial-gradient(circle, rgba(51, 102, 255, 0.1) 0%, rgba(0, 255, 157, 0.05) 50%, transparent 70%);
-          filter: blur(40px);
-          z-index: 0;
-          pointer-events: none;
-        }
-        .redacted-token-badge {
-          display: inline-flex;
-          align-items: center;
-          background: linear-gradient(135deg, rgba(0, 255, 157, 0.2), rgba(0, 255, 157, 0.05));
-          color: #00ff9d;
-          border: 1px solid rgba(0, 255, 157, 0.5);
-          padding: 3px 10px;
-          border-radius: 8px;
-          font-family: 'JetBrains Mono', monospace;
-          font-weight: 700;
-          letter-spacing: 0.5px;
-          margin: 0 4px;
-          box-shadow: 0 0 12px rgba(0, 255, 157, 0.25);
-          text-shadow: 0 0 8px rgba(0, 255, 157, 0.5);
-          animation: pulseGlow 3s infinite;
-        }
-        .premium-panel {
-          background: rgba(15, 15, 20, 0.6);
-          backdrop-filter: blur(20px);
-          border: 1px solid rgba(255, 255, 255, 0.05);
-          border-radius: 16px;
-          padding: 2rem;
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-          position: relative;
-          z-index: 1;
-          display: flex;
-          flex-direction: column;
-          animation: fadeIn 0.4s ease-out;
-        }
-        .premium-panel.danger {
-          border-top: 4px solid var(--accent-red);
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 51, 102, 0.2);
-        }
-        .premium-panel.safe {
-          border-top: 4px solid var(--accent-green);
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(0, 255, 157, 0.2);
-        }
-        .chat-bubble {
-          background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 14px;
-          padding: 1.5rem;
-          margin-top: 1rem;
-          font-size: 1.05rem;
-          line-height: 1.7;
-          white-space: pre-wrap;
-          box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        .injection-bubble {
-          background: linear-gradient(135deg, rgba(51, 102, 255, 0.1), rgba(51, 102, 255, 0.02));
-          border: 1px solid rgba(51, 102, 255, 0.3);
-          border-left: 4px solid var(--accent-blue);
-          border-radius: 14px;
-          padding: 1.5rem;
-          margin-top: 1.5rem;
-          font-size: 1rem;
-          line-height: 1.7;
-          white-space: pre-wrap;
-          color: #e0e7ff;
-          box-shadow: 0 8px 20px rgba(51, 102, 255, 0.15);
-        }
-        .connection-arrow {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 0 1rem;
-          position: relative;
-          z-index: 1;
-        }
-        .flow-line {
-          height: 4px;
-          width: 100%;
-          background: linear-gradient(90deg, var(--accent-red), var(--accent-green));
-          background-size: 200% 100%;
-          border-radius: 4px;
-          animation: flowRight 2s linear infinite;
-          position: relative;
-          box-shadow: 0 0 15px rgba(0, 255, 157, 0.4);
-        }
-        .flow-line::after {
-          content: '';
-          position: absolute;
-          right: -4px;
-          top: -6px;
-          border-top: 8px solid transparent;
-          border-bottom: 8px solid transparent;
-          border-left: 12px solid var(--accent-green);
-        }
-      `}} />
-
-      <div className="xray-container">
-        <div className="bg-glow"></div>
-        
-        <h2 style={{marginTop: 0, fontSize: '2rem', background: 'linear-gradient(90deg, #fff, #a0a0b0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent'}}>Live X-Ray Monitor</h2>
-        <p style={{color: 'var(--text-secondary)', marginBottom: '3rem', fontSize: '1.1rem'}}>
-          Watch how DataPassport instantly sanitizes and enriches the developer's prompts.
+    <>
+      {/* Page Header */}
+      <div className="mb-lg">
+        <h2 className="font-headline-lg text-headline-lg text-on-surface">Live Context Interception</h2>
+        <p className="font-body-md text-body-md text-on-surface-variant mt-sm max-w-3xl">
+          Real-time telemetry of payload sanitization. The X-Ray monitor flags sensitive entity requests and demonstrates automated policy enforcement before routing to external inference endpoints.
         </p>
-        
-        {!liveData.raw ? (
-          <div className="premium-panel" style={{textAlign: 'center', padding: '5rem', alignItems: 'center'}}>
-            <div style={{
-              background: 'rgba(255,255,255,0.05)', 
-              borderRadius: '50%', 
-              width: '100px', 
-              height: '100px', 
-              display: 'flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
-              marginBottom: '1.5rem'
-            }}>
-              <ShieldCheck size={48} color="var(--text-secondary)" style={{opacity: 0.7}} />
-            </div>
-            <h3 style={{margin: 0, fontSize: '1.5rem', color: 'var(--text-primary)'}}>Waiting for AI traffic...</h3>
-            <p style={{color: 'var(--text-secondary)', fontSize: '1.1rem', marginTop: '0.5rem'}}>Type a prompt into Claude Code to see it intercepted here.</p>
-          </div>
-        ) : (
-          <div className="split-screen" style={{height: 'auto', display: 'grid', gridTemplateColumns: '1fr 60px 1fr', gap: '1rem'}}>
-            
-            {/* RAW SIDE */}
-            <div className="premium-panel danger">
-              <div className="payload-header" style={{borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem'}}>
-                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
-                  <div style={{background: 'rgba(255, 51, 102, 0.2)', padding: '8px', borderRadius: '8px'}}>
-                    <ShieldAlert color="var(--accent-red)" size={24} />
-                  </div>
-                  <h3 style={{margin: 0, fontSize: '1.25rem'}}>Device (Raw Input)</h3>
-                </div>
-                <span className="status-badge status-danger" style={{boxShadow: '0 0 10px rgba(255, 51, 102, 0.3)'}}>Unsafe</span>
-              </div>
-              
-              <div style={{marginTop: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontWeight: 600}}>
-                <User size={18} /> <span>Developer Prompt</span>
-              </div>
-              <div className="chat-bubble">
-                {rawParts.prompt || <span style={{color: 'var(--text-secondary)', fontStyle: 'italic'}}>No user prompt detected</span>}
-              </div>
-            </div>
-
-            {/* FLOW ARROW */}
-            <div className="connection-arrow">
-              <div className="flow-line"></div>
-            </div>
-
-            {/* SANITIZED SIDE */}
-            <div className="premium-panel safe">
-              <div className="payload-header" style={{borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem'}}>
-                <div style={{display: 'flex', alignItems: 'center', gap: '0.75rem'}}>
-                  <div style={{background: 'rgba(0, 255, 157, 0.15)', padding: '8px', borderRadius: '8px'}}>
-                    <ShieldCheck color="var(--accent-green)" size={24} />
-                  </div>
-                  <h3 style={{margin: 0, fontSize: '1.25rem'}}>Anthropic API (Outbound)</h3>
-                </div>
-                <span className="status-badge status-safe" style={{boxShadow: '0 0 10px rgba(0, 255, 157, 0.3)'}}>Protected</span>
-              </div>
-              
-              <div style={{marginTop: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontWeight: 600}}>
-                <Cpu size={18} /> <span>Sanitized Prompt sent to AI</span>
-              </div>
-              <div className="chat-bubble">
-                {formatText(sanitizedParts.prompt)}
-              </div>
-
-              {sanitizedParts.injection && (
-                <>
-                  <div style={{marginTop: '2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--accent-blue)', fontWeight: 600}}>
-                    <ShieldCheck size={18} /> <span>DataPassport Knowledge Injection</span>
-                  </div>
-                  <div className="injection-bubble">
-                    {sanitizedParts.injection}
-                  </div>
-                </>
-              )}
-            </div>
-
-          </div>
-        )}
       </div>
-    </div>
+
+      {!liveData.raw ? (
+        <div className="bg-surface-container-lowest rounded-xl border border-outline-variant p-xl shadow-level-2 text-center mt-xl flex flex-col items-center justify-center min-h-[400px]">
+          <div className="w-16 h-16 rounded-full bg-surface-variant flex items-center justify-center mb-md">
+            <span className="material-symbols-outlined text-4xl text-on-surface-variant" style={{opacity: 0.7}}>shield</span>
+          </div>
+          <h3 className="font-headline-md text-headline-md text-on-surface mb-xs">Waiting for AI traffic...</h3>
+          <p className="font-body-md text-body-md text-on-surface-variant max-w-md mx-auto">
+            Type a prompt into Claude Code to see it intercepted here.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col xl:flex-row items-stretch gap-gutter w-full mt-xl">
+          {/* Left Side: Raw Developer Prompt */}
+          <div className="flex-1 bg-surface-container-lowest rounded-xl border border-error/20 border-t-4 border-t-error p-md shadow-level-2 relative overflow-hidden flex flex-col">
+            <div className="flex justify-between items-start mb-md">
+              <div>
+                <h3 className="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+                  <span className="material-symbols-outlined text-error">warning</span>
+                  Device (Raw Input)
+                </h3>
+                <p className="font-body-sm text-body-sm text-on-surface-variant mt-xs">Developer Prompt</p>
+              </div>
+              <div className="bg-error-container text-on-error-container font-label-md text-label-md px-3 py-1.5 rounded uppercase tracking-wider flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px]" style={{fontVariationSettings: "'FILL' 1"}}>gpp_bad</span>
+                UNSAFE
+              </div>
+            </div>
+            
+            <div className="flex-1 bg-background rounded-lg border border-error/10 p-4 font-mono-sm text-mono-sm text-on-surface relative overflow-x-auto whitespace-pre-wrap">
+              {rawParts.prompt || <span style={{color: 'var(--text-secondary)', fontStyle: 'italic'}}>No user prompt detected</span>}
+            </div>
+          </div>
+
+          {/* Flow Connector */}
+          <div className="hidden xl:flex flex-col items-center justify-center px-4 relative z-0">
+            <div className="w-12 h-12 rounded-full bg-surface-variant border border-outline-variant flex items-center justify-center shadow-sm relative z-10">
+              <span className="material-symbols-outlined text-primary">arrow_forward</span>
+            </div>
+            <div className="absolute h-0.5 bg-outline-variant w-full top-1/2 -z-10 -translate-y-1/2"></div>
+          </div>
+          
+          <div className="xl:hidden flex justify-center py-sm">
+            <span className="material-symbols-outlined text-outline text-3xl">arrow_downward</span>
+          </div>
+
+          {/* Right Side: Sanitized Prompt */}
+          <div className="flex-1 bg-surface-container-lowest rounded-xl border border-primary/20 border-t-4 border-t-primary p-md shadow-level-2 relative overflow-hidden flex flex-col">
+            <div className="flex justify-between items-start mb-md">
+              <div>
+                <h3 className="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+                  <span className="material-symbols-outlined text-primary">verified_user</span>
+                  Anthropic API (Outbound)
+                </h3>
+                <p className="font-body-sm text-body-sm text-on-surface-variant mt-xs">Sanitized Prompt sent to AI</p>
+              </div>
+              <div className="bg-primary-container text-on-primary-container font-label-md text-label-md px-3 py-1.5 rounded uppercase tracking-wider flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px]" style={{fontVariationSettings: "'FILL' 1"}}>gpp_good</span>
+                PROTECTED
+              </div>
+            </div>
+            
+            <div className="flex-1 bg-background rounded-lg border border-primary/10 p-4 font-mono-sm text-mono-sm text-on-surface relative overflow-x-auto whitespace-pre-wrap">
+              {formatText(sanitizedParts.prompt)}
+            </div>
+
+            {sanitizedParts.injection && (
+              <>
+                <div className="mt-md mb-xs flex items-center gap-2 text-primary font-semibold">
+                  <span className="material-symbols-outlined text-[18px]">shield</span>
+                  <span>DataPassport Knowledge Injection</span>
+                </div>
+                <div className="bg-surface-container-low rounded-lg border border-primary/20 p-4 font-mono-sm text-mono-sm text-on-surface relative overflow-x-auto whitespace-pre-wrap">
+                  {sanitizedParts.injection}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
