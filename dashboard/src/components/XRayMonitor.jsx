@@ -15,8 +15,8 @@ const extractImportantParts = (messages) => {
     const textBlocks = lastUserMsg.content.filter(b => b.type === 'text');
     for (let i = textBlocks.length - 1; i >= 0; i--) {
       let text = textBlocks[i].text || '';
-      if (text.includes('<system-reminder>')) {
-        injection = text.replace('<system-reminder>', '').replace('</system-reminder>', '').trim();
+      if (text.includes('**Automated Instruction:**')) {
+        injection = text.split('**Automated Instruction:**')[1].trim();
       } else if (text.includes('SUGGESTION MODE:')) {
         continue;
       } else if (!prompt) {

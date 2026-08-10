@@ -90,11 +90,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from . import flows
+from ._trace import install_tracer
 from .policies import check as check_policy
 from .policies import pii as pii_policy
 from .policies import read as read_policy
 from .policies import write as write_policy
 from .protocol.detect import detect
+
+install_tracer()  # no-op unless DP_TRACE=1 — see gateway/_trace.py
 
 UPSTREAM = os.environ.get("DP_UPSTREAM_BASE_URL", "https://api.anthropic.com")
 
