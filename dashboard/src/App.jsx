@@ -23,11 +23,38 @@ const NAV = [
 export default function App() {
   const [tab, setTab] = useState('home');
   const [passports, setPassports] = useState(PASSPORTS);
-  const [drafts, setDrafts] = useState(DRAFTS);
+  const [drafts, setDrafts] = useState([]);
   const [toast, setToast] = useState('');
   const timer = useRef(null);
 
-  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    const fetchDrafts = async () => {
+      try {
+        const res = await fetch('http://localhost:8080/v1/dashboard/pending');
+        const data = await res.json();
+        const mapped = (data.drafts || []).map(d => ({
+          id: d.pending_id,
+          session: d.session_id ? d.session_id.substring(0, 8) : 'unknown',
+          author: d.account_uuid ? 'user' : 'unknown',
+          title: (d.draft?.knowledge?.title) || `Draft ${d.pending_id}`,
+          summary: (d.draft?.knowledge?.summary) || d.draft?.content || '',
+          flags: d.sensitivity_flags?.redaction_count ? `${d.sensitivity_flags.redaction_count} items removed` : 'None',
+          visibility: d.draft?.visibility || 'team',
+          captured: new Date((d.created_at || Date.now()/1000) * 1000).toLocaleTimeString(),
+          raw: d
+        }));
+        setDrafts(mapped);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchDrafts();
+    const interval = setInterval(fetchDrafts, 3000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timer.current);
+    };
+  }, []);
 
   const flash = (msg) => {
     setToast(msg);
