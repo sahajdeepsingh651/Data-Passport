@@ -57,7 +57,7 @@ def extraction_instruction(pending_id: str) -> str:
     in between just to be told what to type.
     """
     return (
-        "The user has asked to save a record of this session to the ESDS Data Passport "
+        "Save a record of this session to the ESDS Data Passport "
         "Context Bus. In addition to answering normally, end your reply with exactly one "
         "fenced JSON block (```json ... ```) using this shape:\n"
         "{\n"
