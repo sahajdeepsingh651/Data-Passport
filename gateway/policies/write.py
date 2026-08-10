@@ -41,10 +41,10 @@ OUTCOME_VALUES = ("decision_made", "insight_found", "issue_resolved",
 DEFAULT_VISIBILITY = "team"
 DEFAULT_STATUS = "completed"
 
-# A fenced json block, non-greedy, anchored at line start. The model is told
+# A fenced json block, non-greedy. The model is told
 # to emit exactly one; if it emits several we take the LAST, on the theory
 # that a model correcting itself puts the good one last.
-_FENCE_RE = re.compile(r"^```json\s*\n(.*?)\n```", re.MULTILINE | re.DOTALL)
+_FENCE_RE = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
 
 
 def extraction_instruction(pending_id: str) -> str:
@@ -105,7 +105,7 @@ def find_draft(response: NormalizedResponse) -> dict | None:
     import re
     start_idx = 0
     while True:
-        match = re.search(r'\{\s*"content"', text[start_idx:])
+        match = re.search(r'\{', text[start_idx:])
         if not match:
             break
             
@@ -134,7 +134,7 @@ def find_draft(response: NormalizedResponse) -> dict | None:
                 raw = text[idx:i+1]
                 try:
                     parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
+                    if isinstance(parsed, dict) and "knowledge" in parsed:
                         return parsed
                 except json.JSONDecodeError:
                     pass

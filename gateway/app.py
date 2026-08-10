@@ -209,6 +209,10 @@ def _apply_write(nr, normalized_resp, vault: dict) -> None:
     """Response side of G6: capture the model's draft into the pending
     store. This NEVER writes to the Context Bus — approval does, and only
     a human can trigger that."""
+    print(f"DEBUG_TEXT length: {len(normalized_resp.text or '')}, text: {normalized_resp.text!r}", flush=True)
+    with open("/tmp/dp_debug_text.log", "a") as f:
+        f.write(f"TEXT: {normalized_resp.text!r}\n")
+    
     result = flows.handle_write_response(nr, normalized_resp, vault)
     msg = ""
     if result.get("captured"):
