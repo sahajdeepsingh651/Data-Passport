@@ -59,8 +59,8 @@ export default function App() {
             <div style={{ width: 13, height: 13, border: '2.5px solid #fff', borderRadius: 4 }} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>Orgbrain</div>
-            <div style={{ fontSize: 11, color: '#8A8398', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Data Passport</div>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>Data Passport</div>
+            {/* <div style={{ fontSize: 11, color: '#8A8398', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Data Passport</div> */}
           </div>
         </div>
 
