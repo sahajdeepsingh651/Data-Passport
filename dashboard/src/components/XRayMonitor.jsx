@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { REQUESTS } from '../data';
 
 const mono = { fontFamily: "'JetBrains Mono', monospace" };
@@ -20,15 +20,86 @@ function Segments({ segs, hotStyle }) {
 const th = { padding: '10px 14px', background: '#FAF9FD', fontSize: 11.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#8A8398' };
 const td = { padding: '12px 14px', borderTop: '1px solid #EDEAF4', fontSize: 13 };
 
+const formatTextToSegments = (text) => {
+  if (!text) return [];
+  const parts = text.split(/(⟦(?:SECRET|PII)_[0-9]+⟧)/g);
+  return parts.map((part) => ({
+    v: part,
+    hot: part.startsWith('⟦SECRET_') || part.startsWith('⟦PII_')
+  }));
+};
+
+const extractImportantParts = (messages) => {
+  if (!Array.isArray(messages) || messages.length === 0) return { prompt: '', injection: '' };
+  let prompt = '';
+  let injection = '';
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+  if (lastUserMsg && Array.isArray(lastUserMsg.content)) {
+    const textBlocks = lastUserMsg.content.filter(b => b.type === 'text');
+    for (let i = textBlocks.length - 1; i >= 0; i--) {
+      let text = textBlocks[i].text || '';
+      if (text.includes('**Automated Instruction:**') || text.includes('<system-reminder>')) {
+        injection = text;
+      } else if (!text.includes('SUGGESTION MODE:') && !prompt) {
+        prompt = text;
+      }
+    }
+  }
+  const systemMsg = messages.find(m => m.role === 'system');
+  if (systemMsg) {
+    if (Array.isArray(systemMsg.content)) {
+      injection = systemMsg.content.map(b => b.text).join('\n');
+    } else if (typeof systemMsg.content === 'string') {
+      injection = systemMsg.content;
+    }
+  }
+  return { prompt, injection };
+};
+
 export default function XRayMonitor() {
+  const [requests, setRequests] = useState(REQUESTS);
   const [selId, setSelId] = useState('r2');
-  const sel = REQUESTS.find((r) => r.id === selId) || REQUESTS[0];
+
+  useEffect(() => {
+    const eventSource = new EventSource('http://localhost:8080/v1/dashboard/stream');
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'request') {
+          const rawParts = extractImportantParts(data.raw?.messages);
+          const safeParts = extractImportantParts(data.sanitized?.messages);
+          if (rawParts.prompt) {
+            const newReq = {
+              id: 'req_' + Date.now(),
+              label: 'Live Request',
+              time: new Date().toLocaleTimeString(),
+              blurb: 'Intercepted from gateway.',
+              tag: safeParts.injection ? 'Context injected' : (safeParts.prompt !== rawParts.prompt ? 'Redacted' : 'Clean'),
+              who: 'live · claude code',
+              raw: [{ v: rawParts.prompt, hot: false }],
+              safe: formatTextToSegments(safeParts.prompt),
+              hasInjection: !!safeParts.injection,
+              injection: safeParts.injection,
+              explain: 'Live traffic captured by the gateway.',
+              findings: [],
+              note: 'Monitoring real-time API traffic.'
+            };
+            setRequests(prev => [newReq, ...prev]);
+            setSelId(newReq.id);
+          }
+        }
+      } catch (e) {}
+    };
+    return () => eventSource.close();
+  }, []);
+
+  const sel = requests.find((r) => r.id === selId) || requests[0] || REQUESTS[0];
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
       <div style={{ flex: '1 1 260px', maxWidth: 340, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9A94A8', paddingLeft: 4 }}>Intercepted requests</div>
-        {REQUESTS.map((rq) => {
+        {requests.map((rq) => {
           const on = rq.id === selId;
           return (
             <div key={rq.id} onClick={() => setSelId(rq.id)} style={{ cursor: 'pointer', background: on ? '#FFFFFF' : '#FBFAFD', border: `1px solid ${on ? '#6D28D9' : '#E7E4EE'}`, borderRadius: 13, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 7 }}>
