@@ -1,81 +1,130 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import './App.css';
+import Overview from './components/Overview';
 import XRayMonitor from './components/XRayMonitor';
 import ContextBusExplorer from './components/ContextBusExplorer';
 import ApprovalInbox from './components/ApprovalInbox';
+import { PASSPORTS, DRAFTS, SERVICES } from './data';
 
-function App() {
-  const [activeTab, setActiveTab] = useState('xray');
+const TITLES = {
+  home: ['Overview', 'What Orgbrain does, in the order it happens.'],
+  xray: ['Live X-Ray', 'The same request before and after the checkpoint.'],
+  bus: ['Context Bus', 'Approved answers the company can retrieve.'],
+  inbox: ['Approval Inbox', 'Drafts that need a person before they are stored.'],
+};
+
+const NAV = [
+  { key: 'home', icon: '◆', label: 'Overview' },
+  { key: 'xray', icon: '◈', label: 'Live X-Ray' },
+  { key: 'bus', icon: '▤', label: 'Context Bus' },
+  { key: 'inbox', icon: '▣', label: 'Approval Inbox' },
+];
+
+export default function App() {
+  const [tab, setTab] = useState('home');
+  const [passports, setPassports] = useState(PASSPORTS);
+  const [drafts, setDrafts] = useState(DRAFTS);
+  const [toast, setToast] = useState('');
+  const timer = useRef(null);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const flash = (msg) => {
+    setToast(msg);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(''), 3200);
+  };
+
+  const approve = (d) => {
+    setDrafts((s) => s.filter((x) => x.id !== d.id));
+    setPassports((s) => [
+      { id: d.id, title: d.title, summary: d.summary, team: 'platform', visibility: 'team', approver: 'you', date: 'today' },
+      ...s,
+    ]);
+    flash('Published to the Context Bus — ' + d.id + ' is now retrievable.');
+  };
+
+  const reject = (d) => {
+    setDrafts((s) => s.filter((x) => x.id !== d.id));
+    flash('Discarded ' + d.id + '. Nothing was stored.');
+  };
+
+  const [title, sub] = TITLES[tab];
 
   return (
-    <div className="bg-background text-on-background font-body-md text-body-md antialiased min-h-screen">
-      {/* SideNavBar */}
-      <nav className="bg-surface-container-low dark:bg-inverse-surface h-screen w-64 fixed left-0 top-0 border-r border-outline-variant dark:border-outline z-20">
-        <div className="flex flex-col h-full p-md">
-          {/* Header/Logo */}
-          <div className="flex items-center gap-3 mb-xl">
-            <div className="w-10 h-10 rounded bg-primary flex items-center justify-center text-on-primary">
-              <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>shield</span>
-            </div>
-            <div>
-              <h1 className="font-headline-md text-headline-md font-bold text-primary dark:text-primary-fixed leading-none">DataPassport</h1>
-              <span className="font-label-md text-label-md text-secondary mt-xs block">Enterprise SaaS</span>
-            </div>
+    <div style={{ minHeight: '100vh', display: 'grid', gridTemplateColumns: '264px 1fr', background: '#F6F5F9', color: '#16121F' }}>
+      <aside style={{ background: '#FFFFFF', borderRight: '1px solid #E7E4EE', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 28, position: 'sticky', top: 0, height: '100vh' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '0 8px' }}>
+          <div style={{ width: 34, height: 34, borderRadius: 10, background: 'linear-gradient(150deg, #8B5CF6, #5B21B6)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 10px rgba(91,33,182,0.28)' }}>
+            <div style={{ width: 13, height: 13, border: '2.5px solid #fff', borderRadius: 4 }} />
           </div>
-          {/* Navigation Tabs */}
-          <ul className="flex flex-col gap-sm flex-1 cursor-pointer">
-            <li onClick={() => setActiveTab('xray')}>
-              <a className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ease-in-out ${activeTab === 'xray' ? 'bg-secondary-container dark:bg-secondary-fixed-dim text-on-secondary-container dark:text-on-secondary-fixed font-semibold' : 'text-secondary dark:text-secondary-fixed hover:bg-surface-variant dark:hover:bg-on-secondary-fixed-variant'}`}>
-                <span className="material-symbols-outlined">monitor_heart</span>
-                <span className="font-body-md text-body-md font-semibold">X-Ray Monitor</span>
-              </a>
-            </li>
-            <li onClick={() => setActiveTab('contextbus')}>
-              <a className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ease-in-out ${activeTab === 'contextbus' ? 'bg-secondary-container dark:bg-secondary-fixed-dim text-on-secondary-container dark:text-on-secondary-fixed font-semibold' : 'text-secondary dark:text-secondary-fixed hover:bg-surface-variant dark:hover:bg-on-secondary-fixed-variant'}`}>
-                <span className="material-symbols-outlined">alt_route</span>
-                <span className="font-body-md text-body-md font-semibold">Context Bus</span>
-              </a>
-            </li>
-            <li onClick={() => setActiveTab('approvals')}>
-              <a className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ease-in-out ${activeTab === 'approvals' ? 'bg-secondary-container dark:bg-secondary-fixed-dim text-on-secondary-container dark:text-on-secondary-fixed font-semibold' : 'text-secondary dark:text-secondary-fixed hover:bg-surface-variant dark:hover:bg-on-secondary-fixed-variant'}`}>
-                <span className="material-symbols-outlined">move_to_inbox</span>
-                <span className="font-body-md text-body-md font-semibold">Approval Inbox</span>
-              </a>
-            </li>
-          </ul>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>Orgbrain</div>
+            <div style={{ fontSize: 11, color: '#8A8398', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Data Passport</div>
+          </div>
         </div>
-      </nav>
 
-      {/* TopAppBar */}
-      <header className="bg-surface-container-lowest dark:bg-surface-dim border-b border-outline-variant dark:border-outline shadow-sm fixed top-0 right-0 left-64 h-16 z-10 flex justify-between items-center px-gutter w-[calc(100%-16rem)]">
-        {/* Search Area */}
-        <div className="flex-1 max-w-md">
-          <div className="relative flex items-center w-full h-10 rounded bg-surface border border-outline-variant focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 transition-all">
-            <span className="material-symbols-outlined absolute left-3 text-on-surface-variant">search</span>
-            <input className="w-full h-full bg-transparent border-none pl-10 pr-4 font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-0" placeholder="Search payloads or policy IDs..." type="text"/>
-          </div>
-        </div>
-        {/* Trailing Actions */}
-        <div className="flex items-center gap-md">
-          <button className="text-on-surface-variant hover:text-primary transition-colors focus-within:ring-2 focus-within:ring-primary/20 rounded p-1">
-            <span className="material-symbols-outlined">notifications</span>
-          </button>
-          <button className="text-on-surface-variant hover:text-primary transition-colors focus-within:ring-2 focus-within:ring-primary/20 rounded p-1">
-            <span className="material-symbols-outlined">settings</span>
-          </button>
-          <div className="w-8 h-8 rounded-full bg-surface-variant border border-outline-variant overflow-hidden cursor-pointer ml-sm">
-            <img alt="User profile" className="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAdqYjFWJmrdJgCQmAxUfyi9t8tE7bv61O1OlA90h9wFqugz6OQ25LpcPv_mE64xC1P5GAtQEye_EQ1_FmTBdLUfXrqP8rrwBKY-s4aWSgLoB_yX1kBojQzXj_h7PcCvNButDYCHsIyU-bXiYCrsVf3vToTN2tvm3QBaZrJA8uZ9e2RqutLeSczusnNNZ7qYafI7DhpEBI4_NnSKlLinvH0rJ0a8K89t7s3FvYw"/>
-          </div>
-        </div>
-      </header>
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#9A94A8', letterSpacing: '0.07em', textTransform: 'uppercase', padding: '0 10px 8px' }}>Dashboard</div>
+          {NAV.map((n) => {
+            const on = tab === n.key;
+            return (
+              <div key={n.key} className="ob-nav" onClick={() => setTab(n.key)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px', borderRadius: 9, cursor: 'pointer', fontSize: 14.5, fontWeight: 500, transition: 'background .15s', background: on ? '#F1EDFB' : 'transparent', color: on ? '#6D28D9' : '#4A4458' }}>
+                <span style={{ width: 18, display: 'flex', justifyContent: 'center' }}>{n.icon}</span>
+                <span style={{ flex: 1 }}>{n.label}</span>
+                {n.key === 'inbox' && drafts.length > 0 && (
+                  <span style={{ background: '#F5E6C8', color: '#8A5A05', fontSize: 11.5, fontWeight: 700, padding: '2px 8px', borderRadius: 99 }}>{drafts.length}</span>
+                )}
+              </div>
+            );
+          })}
+        </nav>
 
-      {/* Main Content Canvas */}
-      <main className="ml-64 mt-16 p-lg">
-        {activeTab === 'xray' && <XRayMonitor />}
-        {activeTab === 'contextbus' && <ContextBusExplorer />}
-        {activeTab === 'approvals' && <ApprovalInbox />}
+        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ border: '1px solid #E7E4EE', borderRadius: 12, padding: 14, background: '#FBFAFD', display: 'flex', flexDirection: 'column', gap: 9 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#9A94A8', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Services</div>
+            {SERVICES.map((svc) => (
+              <div key={svc.name} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#4A4458' }}>
+                <span style={{ width: 7, height: 7, borderRadius: 99, background: '#17A673', boxShadow: '0 0 0 3px rgba(23,166,115,0.15)' }} />
+                <span style={{ flex: 1 }}>{svc.name}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: '#9A94A8' }}>{svc.port}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 11.5, color: '#9A94A8', padding: '0 4px', lineHeight: 1.5 }}>
+            Showing sample data so the flow is visible without a live agent attached.
+          </div>
+        </div>
+      </aside>
+
+      <main style={{ minWidth: 0 }}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, padding: '20px 36px', borderBottom: '1px solid #E7E4EE', background: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(8px)', position: 'sticky', top: 0, zIndex: 5 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em' }}>{title}</h1>
+            <div style={{ fontSize: 13.5, color: '#6B6580' }}>{sub}</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: '#F1EDFB', color: '#5B21B6', border: '1px solid #E0D5F7', fontSize: 12.5, fontWeight: 600, padding: '6px 12px', borderRadius: 99 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 99, background: '#7C3AED' }} />
+              Demo data
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: '#FFFFFF', border: '1px solid #E7E4EE', color: '#4A4458', fontSize: 12.5, fontWeight: 500, padding: '6px 12px', borderRadius: 99, fontFamily: "'JetBrains Mono', monospace" }}>gateway :8080</span>
+          </div>
+        </header>
+
+        <div style={{ padding: '32px 36px 56px' }}>
+          {tab === 'home' && <Overview go={setTab} passportCount={passports.length} draftCount={drafts.length} />}
+          {tab === 'xray' && <XRayMonitor />}
+          {tab === 'bus' && <ContextBusExplorer passports={passports} />}
+          {tab === 'inbox' && <ApprovalInbox drafts={drafts} onApprove={approve} onReject={reject} />}
+        </div>
       </main>
+
+      {toast && (
+        <div style={{ position: 'fixed', bottom: 26, left: '50%', transform: 'translateX(-50%)', background: '#191428', color: '#F3EFFB', fontSize: 14, fontWeight: 500, padding: '13px 22px', borderRadius: 12, boxShadow: '0 12px 30px rgba(25,20,40,0.3)', zIndex: 50 }}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
-
-export default App;

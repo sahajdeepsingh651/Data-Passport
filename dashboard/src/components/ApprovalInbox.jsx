@@ -1,114 +1,57 @@
-import { useEffect, useState } from 'react';
-import axios from 'axios';
-import { CheckSquare, CheckCircle, Clock } from 'lucide-react';
+const label = { fontSize: 11.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#9A94A8' };
 
-export default function ApprovalInbox() {
-  const [drafts, setDrafts] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Poll the gateway for pending drafts
-    const fetchDrafts = async () => {
-      try {
-        const response = await axios.get('http://localhost:8080/v1/dashboard/pending');
-        setDrafts(response.data.drafts || []);
-      } catch (err) {
-        console.error("Failed to fetch pending drafts", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDrafts();
-    const interval = setInterval(fetchDrafts, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
+export default function ApprovalInbox({ drafts, onApprove, onReject }) {
   return (
-    <>
-      <div className="mb-gutter flex justify-between items-end">
-        <div>
-          <h2 className="font-headline-lg text-headline-lg text-on-surface mb-xs flex items-center gap-2">
-            <span className="material-symbols-outlined text-error">check_box</span>
-            Approval Inbox
-          </h2>
-          <p className="font-body-md text-body-md text-secondary">Review and authorize pending AI-generated drafts.</p>
-        </div>
-        <div className="flex gap-sm">
-          <button className="flex items-center gap-xs px-sm py-xs bg-surface-container border border-outline-variant rounded-lg font-label-md text-label-md text-on-surface hover:bg-surface-variant transition-colors">
-            <span aria-hidden="true" className="material-symbols-outlined text-[18px]">filter_list</span>
-            Filter
-          </button>
-          <button className="flex items-center gap-xs px-sm py-xs bg-surface-container border border-outline-variant rounded-lg font-label-md text-label-md text-on-surface hover:bg-surface-variant transition-colors">
-            <span aria-hidden="true" className="material-symbols-outlined text-[18px]">sort</span>
-            Sort
-          </button>
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 1000 }}>
+      <div style={{ background: '#FFF9EC', border: '1px solid #F2E2BE', borderRadius: 14, padding: '16px 20px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <span style={{ fontSize: 15, lineHeight: 1.5 }}>⏳</span>
+        <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: '#6B5320', textWrap: 'pretty' }}>
+          These drafts have passed every automated check and still went nowhere. They stay here until a person approves them — that is the only route into the Context Bus.
+        </p>
       </div>
 
-      {loading ? (
-        <p className="text-on-surface-variant">Loading inbox...</p>
-      ) : drafts.length === 0 ? (
-        <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-xl shadow-[0px_10px_15px_-3px_rgba(1,8,26,0.08)] flex flex-col items-center justify-center text-center">
-          <div className="w-16 h-16 rounded-full bg-primary-container/20 flex items-center justify-center mb-md">
-            <span className="material-symbols-outlined text-4xl text-primary" style={{fontVariationSettings: "'FILL' 1"}}>check_circle</span>
-          </div>
-          <h3 className="font-headline-md text-headline-md text-on-surface mb-xs">Inbox Zero</h3>
-          <p className="font-body-md text-body-md text-secondary">All intercepted drafts have been processed.</p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-md">
-          {drafts.map((d, idx) => (
-            <div key={idx} className="bg-surface-container-lowest border border-outline-variant rounded-xl p-md shadow-[0px_10px_15px_-3px_rgba(1,8,26,0.08)] flex flex-col gap-md transition-all hover:border-primary/50">
-              <div className="flex justify-between items-start">
-                <div className="flex items-center gap-sm">
-                  <div className="w-10 h-10 rounded-lg bg-surface-variant flex items-center justify-center text-primary">
-                    <span aria-hidden="true" className="material-symbols-outlined">campaign</span>
-                  </div>
-                  <div>
-                    <h3 className="font-headline-md text-headline-md text-on-surface text-[20px]">{d.title || `Draft ${d.pending_id}`}</h3>
-                    <div className="flex items-center gap-sm mt-xs">
-                      <span className="font-mono-sm text-mono-sm text-secondary">ID: {d.session_id.substring(0,8)}</span>
-                      <span className="w-1 h-1 bg-outline-variant rounded-full"></span>
-                      <span className="font-label-md text-label-md text-secondary flex items-center gap-1 uppercase">
-                        <span aria-hidden="true" className="material-symbols-outlined text-[14px]">
-                          {d.visibility === 'private' ? 'lock' : d.visibility === 'team' ? 'group' : 'public'}
-                        </span> {d.visibility}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div className="px-sm py-xs bg-[#FF9933]/10 text-[#FF9933] rounded-full font-label-md text-label-md flex items-center gap-xs border border-[#FF9933]/20">
-                  <span aria-hidden="true" className="material-symbols-outlined text-[14px]">hourglass_empty</span>
-                  Pending Approval
-                </div>
-              </div>
-              
-              <div className="bg-surface p-sm rounded-lg border border-outline-variant/50">
-                <h4 className="font-label-md text-label-md text-on-surface-variant mb-xs">Sanitized Summary</h4>
-                <p className="font-body-sm text-body-sm text-on-surface whitespace-pre-wrap">
-                  {d.summary}
-                </p>
-              </div>
-              
-              <div className="flex justify-end gap-sm pt-xs border-t border-outline-variant/30">
-                <button className="px-md py-sm bg-surface-container-lowest border border-outline-variant text-on-surface-variant font-label-md text-label-md rounded-lg hover:bg-surface-variant hover:text-on-surface transition-colors flex items-center gap-xs">
-                  <span aria-hidden="true" className="material-symbols-outlined text-[18px]">edit</span>
-                  Edit
-                </button>
-                <button className="px-md py-sm bg-surface-container-lowest border border-error/30 text-error font-label-md text-label-md rounded-lg hover:bg-error-container transition-colors flex items-center gap-xs">
-                  <span aria-hidden="true" className="material-symbols-outlined text-[18px]">close</span>
-                  Reject
-                </button>
-                <button className="px-md py-sm bg-primary text-on-primary font-label-md text-label-md rounded-lg hover:bg-primary/90 shadow-sm transition-colors flex items-center gap-xs">
-                  <span aria-hidden="true" className="material-symbols-outlined text-[18px]">check</span>
-                  Approve
-                </button>
-              </div>
+      {drafts.map((d) => (
+        <div key={d.id} style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: 24, display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em', textWrap: 'pretty' }}>{d.title}</span>
+              <span style={{ fontSize: 12.5, color: '#8A8398', fontFamily: "'JetBrains Mono', monospace" }}>{d.id} · session {d.session} · {d.author}</span>
             </div>
-          ))}
+            <span style={{ flex: 'none', fontSize: 11.5, fontWeight: 700, padding: '5px 11px', borderRadius: 99, background: '#FDF3E2', color: '#8A5A05', border: '1px solid #F2E2BE' }}>Waiting for approval</span>
+          </div>
+
+          <div style={{ background: '#FAF9FD', border: '1px solid #EDEAF4', borderRadius: 12, padding: '16px 18px', fontSize: 14, lineHeight: 1.7, color: '#3A3448', textWrap: 'pretty' }}>{d.summary}</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Sensitive data found</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.flags}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Who will see it</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.visibility}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Captured</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.captured}</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', paddingTop: 18, borderTop: '1px solid #F0EEF5' }}>
+            <button className="ob-btn-primary" onClick={() => onApprove(d)} style={{ font: 'inherit', border: 'none', cursor: 'pointer', background: '#6D28D9', color: '#fff', fontSize: 14, fontWeight: 600, padding: '10px 18px', borderRadius: 10 }}>Approve &amp; publish</button>
+            <button className="ob-btn-ghost" onClick={() => onReject(d)} style={{ font: 'inherit', cursor: 'pointer', background: '#FFFFFF', border: '1px solid #DDD8E8', color: '#2A2438', fontSize: 14, fontWeight: 600, padding: '10px 18px', borderRadius: 10 }}>Discard</button>
+            <span style={{ fontSize: 12.5, color: '#8A8398', fontFamily: "'JetBrains Mono', monospace" }}>same as typing ESDS_APPROVE {d.id}</span>
+          </div>
+        </div>
+      ))}
+
+      {drafts.length === 0 && (
+        <div style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: '64px 32px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
+          <div style={{ width: 52, height: 52, borderRadius: 99, background: '#EDF9F3', color: '#0E7C5A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>✓</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Nothing waiting</div>
+          <div style={{ fontSize: 14, color: '#6B6580', maxWidth: '44ch', lineHeight: 1.6 }}>Every captured draft has been reviewed. New ones appear here the moment a developer types ESDS_SUBMIT.</div>
         </div>
       )}
-    </>
+    </div>
   );
 }
