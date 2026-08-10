@@ -24,6 +24,7 @@ export default function App() {
   const [tab, setTab] = useState('home');
   const [passports, setPassports] = useState(PASSPORTS);
   const [drafts, setDrafts] = useState([]);
+  const [hiddenDraftIds, setHiddenDraftIds] = useState(new Set());
   const [toast, setToast] = useState('');
   const timer = useRef(null);
 
@@ -32,18 +33,24 @@ export default function App() {
       try {
         const res = await fetch('http://localhost:8080/v1/dashboard/pending');
         const data = await res.json();
-        const mapped = (data.drafts || []).map(d => ({
-          id: d.pending_id,
-          session: d.session_id ? d.session_id.substring(0, 8) : 'unknown',
-          author: d.account_uuid ? 'user' : 'unknown',
-          title: (d.draft?.knowledge?.title) || `Draft ${d.pending_id}`,
-          summary: (d.draft?.knowledge?.summary) || d.draft?.content || '',
-          flags: d.sensitivity_flags?.redaction_count ? `${d.sensitivity_flags.redaction_count} items removed` : 'None',
-          visibility: d.draft?.visibility || 'team',
-          captured: new Date((d.created_at || Date.now()/1000) * 1000).toLocaleTimeString(),
-          raw: d
-        }));
-        setDrafts(mapped);
+        
+        setHiddenDraftIds(prevHidden => {
+          const mapped = (data.drafts || [])
+            .filter(d => !prevHidden.has(d.pending_id))
+            .map(d => ({
+              id: d.pending_id,
+              session: d.session_id ? d.session_id.substring(0, 8) : 'unknown',
+              author: d.account_uuid ? 'user' : 'unknown',
+              title: (d.draft?.knowledge?.title) || `Draft ${d.pending_id}`,
+              summary: (d.draft?.knowledge?.summary) || d.draft?.content || '',
+              flags: d.sensitivity_flags?.redaction_count ? `${d.sensitivity_flags.redaction_count} items removed` : 'None',
+              visibility: d.draft?.visibility || 'team',
+              captured: new Date((d.created_at || Date.now()/1000) * 1000).toLocaleTimeString(),
+              raw: d
+            }));
+          setDrafts(mapped);
+          return prevHidden;
+        });
       } catch (e) {
         console.error(e);
       }
@@ -63,15 +70,17 @@ export default function App() {
   };
 
   const approve = (d) => {
+    setHiddenDraftIds(prev => new Set(prev).add(d.id));
     setDrafts((s) => s.filter((x) => x.id !== d.id));
     setPassports((s) => [
-      { id: d.id, title: d.title, summary: d.summary, team: 'platform', visibility: 'team', approver: 'you', date: 'today' },
+      { id: d.id, title: d.title, summary: d.summary, team: 'platform', visibility: d.visibility, approver: 'you', date: 'today' },
       ...s,
     ]);
     flash('Published to the Context Bus — ' + d.id + ' is now retrievable.');
   };
 
   const reject = (d) => {
+    setHiddenDraftIds(prev => new Set(prev).add(d.id));
     setDrafts((s) => s.filter((x) => x.id !== d.id));
     flash('Discarded ' + d.id + '. Nothing was stored.');
   };
