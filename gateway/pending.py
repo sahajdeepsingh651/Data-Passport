@@ -86,8 +86,8 @@ def save(*, pending_id: str, session_id: str, account_uuid: str | None,
     
     with _pending_lock:
         tmp_path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
-        tmp_path.rename(path)
-    
+        tmp_path.replace(path)
+
     # We use a simple global lock instead of per-session, as load is low
     from .flows import _log_lock
     with _log_lock:
@@ -141,8 +141,8 @@ def set_status(pending_id: str, status: str, **extra) -> dict | None:
         
         tmp_path = path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(record, indent=2, ensure_ascii=False))
-        tmp_path.rename(path)
-        
+        tmp_path.replace(path)
+
     return record
 
 
