@@ -1,77 +1,55 @@
-import { useEffect, useState } from 'react';
-import axios from 'axios';
-import { CheckSquare, CheckCircle, Clock } from 'lucide-react';
+const label = { fontSize: 11.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#9A94A8' };
 
-export default function ApprovalInbox() {
-  const [drafts, setDrafts] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Poll the gateway for pending drafts
-    const fetchDrafts = async () => {
-      try {
-        const response = await axios.get('http://localhost:8080/v1/dashboard/pending');
-        setDrafts(response.data.drafts || []);
-      } catch (err) {
-        console.error("Failed to fetch pending drafts", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDrafts();
-    const interval = setInterval(fetchDrafts, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
+export default function ApprovalInbox({ drafts, onApprove, onReject }) {
   return (
-    <div>
-      <h2 style={{marginTop: 0, display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-        <CheckSquare color="var(--accent-red)" /> 
-        Approval Inbox
-      </h2>
-      <p style={{color: 'var(--text-secondary)', marginBottom: '2rem'}}>
-        AI drafts waiting for ESDS_APPROVE before entering the Context Bus.
-      </p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 1000 }}>
+      <div style={{ background: '#FFF9EC', border: '1px solid #F2E2BE', borderRadius: 14, padding: '16px 20px', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <span style={{ fontSize: 15, lineHeight: 1.5 }}>⏳</span>
+        <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: '#6B5320', textWrap: 'pretty' }}>
+          These drafts have passed every automated check and still went nowhere. They stay here until a person approves them — that is the only route into the Context Bus.
+        </p>
+      </div>
 
-      {loading ? (
-        <p>Loading inbox...</p>
-      ) : drafts.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '4rem', background: 'var(--bg-glass)', borderRadius: '12px' }}>
-          <CheckCircle size={48} color="var(--accent-green)" style={{marginBottom: '1rem'}} />
-          <h3 style={{margin: 0}}>Inbox Zero</h3>
-          <p style={{color: 'var(--text-secondary)'}}>All intercepted drafts have been processed.</p>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {drafts.map((d, idx) => (
-            <div key={idx} className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '1.2rem' }}>{d.title || `Draft ${d.pending_id}`}</h3>
-                <div className="tag" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'orange', background: 'rgba(255, 165, 0, 0.1)' }}>
-                  <Clock size={14} /> Pending Approval
-                </div>
-              </div>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Session ID</div>
-                  <div style={{ fontFamily: 'monospace' }}>{d.session_id}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>Visibility</div>
-                  <div>{d.visibility}</div>
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Sanitized Summary (Safe to publish)</div>
-                <div className="code-block" style={{ padding: '0.75rem', margin: 0 }}>
-                  {d.summary}
-                </div>
-              </div>
+      {drafts.map((d) => (
+        <div key={d.id} style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: 24, display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.015em', textWrap: 'pretty' }}>{d.title}</span>
+              <span style={{ fontSize: 12.5, color: '#8A8398', fontFamily: "'JetBrains Mono', monospace" }}>{d.id} · session {d.session} · {d.author}</span>
             </div>
-          ))}
+            <span style={{ flex: 'none', fontSize: 11.5, fontWeight: 700, padding: '5px 11px', borderRadius: 99, background: '#FDF3E2', color: '#8A5A05', border: '1px solid #F2E2BE' }}>Waiting for approval</span>
+          </div>
+
+          <div style={{ background: '#FAF9FD', border: '1px solid #EDEAF4', borderRadius: 12, padding: '16px 18px', fontSize: 14, lineHeight: 1.7, color: '#3A3448', textWrap: 'pretty' }}>{d.summary}</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Sensitive data found</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.flags}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Who will see it</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.visibility}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={label}>Captured</span>
+              <span style={{ fontSize: 13.5, color: '#3A3448' }}>{d.captured}</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', paddingTop: 18, borderTop: '1px solid #F0EEF5' }}>
+            <button className="ob-btn-primary" onClick={() => onApprove(d)} style={{ font: 'inherit', border: 'none', cursor: 'pointer', background: '#6D28D9', color: '#fff', fontSize: 14, fontWeight: 600, padding: '10px 18px', borderRadius: 10 }}>Approve &amp; publish</button>
+            <button className="ob-btn-ghost" onClick={() => onReject(d)} style={{ font: 'inherit', cursor: 'pointer', background: '#FFFFFF', border: '1px solid #DDD8E8', color: '#2A2438', fontSize: 14, fontWeight: 600, padding: '10px 18px', borderRadius: 10 }}>Discard</button>
+            <span style={{ fontSize: 12.5, color: '#8A8398', fontFamily: "'JetBrains Mono', monospace" }}>same as typing ESDS_APPROVE {d.id}</span>
+          </div>
+        </div>
+      ))}
+
+      {drafts.length === 0 && (
+        <div style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: '64px 32px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
+          <div style={{ width: 52, height: 52, borderRadius: 99, background: '#EDF9F3', color: '#0E7C5A', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>✓</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>Nothing waiting</div>
+          <div style={{ fontSize: 14, color: '#6B6580', maxWidth: '44ch', lineHeight: 1.6 }}>Every captured draft has been reviewed. New ones appear here the moment a developer types ESDS_SUBMIT.</div>
         </div>
       )}
     </div>

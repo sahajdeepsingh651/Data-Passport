@@ -1,82 +1,51 @@
-import { useEffect, useState } from 'react';
-import axios from 'axios';
-import { Database, Lock, Users, Building, FileText } from 'lucide-react';
+import { useState } from 'react';
+import { VIS } from '../data';
 
-export default function ContextBusExplorer() {
-  const [passports, setPassports] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Fetch data passports from the real store backend
-    const fetchPassports = async () => {
-      try {
-        const response = await axios.get('http://localhost:8000/v1/search', {
-          headers: {
-            'Authorization': 'Bearer dev-local-token' // Using the dev token
-          },
-          params: {
-            q: '.*', // fetch all for demo (if supported) or rely on backend defaults
-          }
-        });
-        setPassports(response.data.results || []);
-      } catch (err) {
-        console.error("Failed to fetch passports from Context Bus", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPassports();
-  }, []);
-
-  const getVisibilityIcon = (vis) => {
-    if (vis === 'private') return <Lock size={14} />;
-    if (vis === 'team') return <Users size={14} />;
-    return <Building size={14} />;
-  };
+export default function ContextBusExplorer({ passports }) {
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const visible = q
+    ? passports.filter((p) => (p.title + ' ' + p.summary + ' ' + p.team).toLowerCase().includes(q))
+    : passports;
 
   return (
-    <div>
-      <h2 style={{marginTop: 0, display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
-        <Database color="var(--accent-blue)" /> 
-        Context Bus (Knowledge Library)
-      </h2>
-      <p style={{color: 'var(--text-secondary)', marginBottom: '2rem'}}>
-        Approved Data Passports currently available for retrieval by AI agents.
-      </p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: '20px 24px', display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
+        <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: '#4A4458', flex: 1, minWidth: 320, textWrap: 'pretty' }}>
+          Every card here is an approved answer somebody already worked out. When another developer hits the same problem, the matching card is pulled in automatically — they never have to know it exists.
+        </p>
+        <input
+          className="ob-input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search passports…"
+          style={{ font: 'inherit', fontSize: 14, padding: '10px 14px', border: '1px solid #DDD8E8', borderRadius: 10, minWidth: 240, outline: 'none', color: '#16121F', background: '#FDFCFE' }}
+        />
+      </div>
 
-      {loading ? (
-        <p>Loading Context Bus...</p>
-      ) : passports.length === 0 ? (
-        <p>No passports found in the Context Bus yet.</p>
-      ) : (
-        <div className="passport-grid">
-          {passports.map((p, idx) => (
-            <div key={idx} className="glass-panel passport-card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                <div className="tag" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                  {getVisibilityIcon(p.visibility)}
-                  {p.visibility.toUpperCase()}
-                </div>
-                <div className="tag" style={{ color: 'var(--accent-blue)' }}>
-                  {p.team || p.department || 'GLOBAL'}
-                </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+        {visible.map((p) => {
+          const v = VIS[p.visibility] || VIS.team;
+          return (
+            <div key={p.id} className="ob-shadow" style={{ background: '#FFFFFF', border: '1px solid #E7E4EE', borderRadius: 16, padding: 22, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '3px 9px', borderRadius: 6, background: v.visBg, color: v.visFg }}>{v.visLabel}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: '#9A94A8' }}>{p.id}</span>
               </div>
-              
-              <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem' }}>
-                <FileText size={16} style={{display: 'inline', marginRight: '4px', verticalAlign: 'text-bottom'}}/>
-                {p.title || `Session ${p.session_id.substring(0,8)}`}
-              </h3>
-              
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1.5rem', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                {p.summary || p.content_snippet || 'No summary available.'}
-              </p>
-
-              <div style={{ fontSize: '0.75rem', color: '#666' }}>
-                {new Date(p.created_at).toLocaleString()}
+              <div style={{ fontSize: 15.5, fontWeight: 700, lineHeight: 1.35, letterSpacing: '-0.01em', textWrap: 'pretty' }}>{p.title}</div>
+              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.65, color: '#4A4458', textWrap: 'pretty' }}>{p.summary}</p>
+              <div style={{ marginTop: 'auto', paddingTop: 10, borderTop: '1px solid #F0EEF5', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#8A8398' }}>
+                <span>{p.team} · approved by {p.approver}</span>
+                <span>{p.date}</span>
               </div>
             </div>
-          ))}
+          );
+        })}
+      </div>
+
+      {visible.length === 0 && (
+        <div style={{ background: '#FFFFFF', border: '1px dashed #DDD8E8', borderRadius: 16, padding: 48, textAlign: 'center', color: '#8A8398', fontSize: 14.5 }}>
+          Nothing matches "{query}". Zero results is a valid answer — the system injects nothing rather than guessing.
         </div>
       )}
     </div>
