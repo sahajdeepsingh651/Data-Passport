@@ -7,7 +7,7 @@ import ApprovalInbox from './components/ApprovalInbox';
 import { PASSPORTS, DRAFTS, SERVICES } from './data';
 
 const TITLES = {
-  home: ['Overview', 'What Orgbrain does, in the order it happens.'],
+  home: ['Overview', 'What Data Passport does, in the order it happens.'],
   xray: ['Live X-Ray', 'The same request before and after the checkpoint.'],
   bus: ['Context Bus', 'Approved answers the company can retrieve.'],
   inbox: ['Approval Inbox', 'Drafts that need a person before they are stored.'],
@@ -22,7 +22,7 @@ const NAV = [
 
 export default function App() {
   const [tab, setTab] = useState('home');
-  const [passports, setPassports] = useState(PASSPORTS);
+  const [passports, setPassports] = useState([]);
   const [drafts, setDrafts] = useState([]);
   const [hiddenDraftIds, setHiddenDraftIds] = useState(new Set());
   const [toast, setToast] = useState('');
@@ -51,6 +51,38 @@ export default function App() {
           setDrafts(mapped);
           return prevHidden;
         });
+
+        const mappedApproved = (data.approved_drafts || []).map(d => ({
+          id: d.pending_id,
+          title: (d.draft?.knowledge?.title) || `Draft ${d.pending_id}`,
+          summary: (d.draft?.knowledge?.summary) || d.draft?.content || '',
+          team: 'platform',
+          visibility: d.draft?.visibility || 'team',
+          approver: 'you',
+          date: 'today'
+        }));
+
+        setPassports(prevPassports => {
+          const all = [...mappedApproved];
+          const unique = [];
+          const seen = new Set();
+          for (const p of all) {
+            if (!seen.has(p.id)) {
+              seen.add(p.id);
+              unique.push(p);
+            }
+          }
+          // Include any passports that were just approved locally in this session
+          // and might not be in the backend's approved list yet
+          for (const p of prevPassports) {
+            if (!seen.has(p.id)) {
+              seen.add(p.id);
+              unique.unshift(p);
+            }
+          }
+          return unique;
+        });
+
       } catch (e) {
         console.error(e);
       }
@@ -95,7 +127,7 @@ export default function App() {
             <div style={{ width: 13, height: 13, border: '2.5px solid #fff', borderRadius: 4 }} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>Orgbrain</div>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>Data Passport</div>
             <div style={{ fontSize: 11, color: '#8A8398', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Data Passport</div>
           </div>
         </div>

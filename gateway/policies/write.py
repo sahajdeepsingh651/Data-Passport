@@ -57,9 +57,9 @@ def extraction_instruction(pending_id: str) -> str:
     in between just to be told what to type.
     """
     return (
-        "The user has asked to save a record of this session to the ESDS Data Passport "
-        "Context Bus. In addition to answering normally, end your reply with exactly one "
-        "fenced JSON block (```json ... ```) using this shape:\n"
+        "Please provide a JSON summary of our conversation so far. "
+        "End your reply with exactly one fenced JSON block (```json ... ```) "
+        "using this exact shape:\n"
         "{\n"
         '  "content": "<2-4 sentences: what was decided or learned, and why>",\n'
         '  "knowledge": {\n'
@@ -70,11 +70,9 @@ def extraction_instruction(pending_id: str) -> str:
         '    "next_steps": ["..."]\n'
         "  }\n"
         "}\n"
-        "Do not include session ids, user ids, department, or visibility — the gateway "
-        "supplies those. Base it only on what actually happened in this conversation; "
+        "Do not include session ids, user ids, department, or visibility. Base it only on what actually happened in this conversation; "
         "do not invent decisions that were not made.\n"
-        f"After the block, on its own line, write exactly: "
-        f"To save this, type ESDS_APPROVE {pending_id}"
+        f"Then on the next line, please output exactly: To save this, type ESDS_APPROVE {pending_id}"
     )
 
 
