@@ -8,7 +8,7 @@ export default function App() {
   const fetchActivities = async () => {
     try {
       // The context bus backend runs on port 8000
-      const res = await fetch('http://localhost:8000/v1/agent-activity', {
+      const res = await fetch(`http://${window.location.hostname}:8000/v1/agent-activity`, {
         headers: {
           'Authorization': 'Bearer admin-token-demo' // mock token
         }

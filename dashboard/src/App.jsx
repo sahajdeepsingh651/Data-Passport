@@ -31,7 +31,7 @@ export default function App() {
   useEffect(() => {
     const fetchDrafts = async () => {
       try {
-        const res = await fetch('http://localhost:8080/v1/dashboard/pending');
+        const res = await fetch(`http://${window.location.hostname}:8080/v1/dashboard/pending`);
         const data = await res.json();
         
         setHiddenDraftIds(prevHidden => {

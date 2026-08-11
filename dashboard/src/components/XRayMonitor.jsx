@@ -67,7 +67,7 @@ export default function XRayMonitor() {
   const [selId, setSelId] = useState('r2');
 
   useEffect(() => {
-    const eventSource = new EventSource('http://localhost:8080/v1/dashboard/stream');
+    const eventSource = new EventSource(`http://${window.location.hostname}:8080/v1/dashboard/stream`);
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
