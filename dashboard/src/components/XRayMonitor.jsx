@@ -45,12 +45,18 @@ const extractImportantParts = (messages) => {
       }
     }
   }
-  const systemMsg = messages.find(m => m.role === 'system');
-  if (systemMsg) {
+  const systemMsgs = messages.filter(m => m.role === 'system');
+  for (const systemMsg of systemMsgs) {
+    let text = '';
     if (Array.isArray(systemMsg.content)) {
-      injection = systemMsg.content.map(b => b.text).join('\n');
+      text = systemMsg.content.map(b => b.text).join('\n');
     } else if (typeof systemMsg.content === 'string') {
-      injection = systemMsg.content;
+      text = systemMsg.content;
+    }
+    
+    if (text.includes('ESDS') || text.includes('Data Passport') || text.includes('DataPassport') || text.includes('Automated Instruction')) {
+      injection = text;
+      break;
     }
   }
   return { prompt, injection };
@@ -144,7 +150,7 @@ export default function XRayMonitor() {
             <Segments segs={sel.safe} hotStyle={{ background: '#F1EAFE', color: '#5B21B6', border: '1px solid #DCCCFA', borderRadius: 5, padding: '1px 5px', fontWeight: 700 }} />
             {sel.hasInjection && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#6D28D9' }}>Context added by Orgbrain</div>
+                <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#6D28D9' }}>Context added by Data Passport</div>
                 <div style={{ ...mono, background: '#F7F3FF', border: '1px solid #E2D6FB', borderLeft: '3px solid #7C3AED', borderRadius: 10, padding: '14px 16px', fontSize: 13, lineHeight: 1.7, color: '#3A2E55', whiteSpace: 'pre-wrap' }}>{sel.injection}</div>
                 <div style={{ fontSize: 12.5, color: '#8A8398', lineHeight: 1.55 }}>Appended after the cached part of the conversation, so answering with company context costs nothing extra.</div>
               </div>

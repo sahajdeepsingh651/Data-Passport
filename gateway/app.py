@@ -455,14 +455,19 @@ async def dashboard_pending():
     """REST endpoint for dashboard to view pending drafts."""
     from .pending import PENDING_DIR
     drafts = []
+    approved_drafts = []
     if PENDING_DIR.exists():
         for p in PENDING_DIR.glob("*.json"):
             try:
                 with open(p) as f:
                     draft = json.load(f)
-                    drafts.append(draft)
+                    if draft.get("status") == "pending_approval":
+                        drafts.append(draft)
+                    elif draft.get("status") == "approved":
+                        approved_drafts.append(draft)
             except Exception:
                 pass
     # sort by timestamp descending
     drafts.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
-    return JSONResponse({"drafts": drafts})
+    approved_drafts.sort(key=lambda d: d.get("timestamp", 0), reverse=True)
+    return JSONResponse({"drafts": drafts, "approved_drafts": approved_drafts})

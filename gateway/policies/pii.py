@@ -302,8 +302,20 @@ def _redact_text(text: str, vault: dict, value_to_token: dict) -> str:
     # Find JSON blocks wrapped in markdown (```json ... ```)
     text = re.sub(r"(```json\s*\n)(.*?)(\n```)", _replace_json_block, text, flags=re.DOTALL)
     
-    return _apply_patterns(text, vault, value_to_token)
+    def _replace_kv(m):
+        val = m.group(2).strip()
+        # strip trailing 'and' if present
+        if val.lower().endswith(" and"):
+            val = val[:-4]
+            return m.group(1) + _mint_token(val, vault, value_to_token) + " and"
+        return m.group(1) + _mint_token(val, vault, value_to_token)
 
+    for field in _SENSITIVE_JSON_FIELDS:
+        # Match field name (optional backticks) followed by is/:/= then the value up to "and", ".", or newline
+        pattern = r"(`?" + re.escape(field) + r"`?\s*(?:is|:|=)\s*)(.+?)(?=\s+and\b|\.|\n|$)"
+        text = re.sub(pattern, _replace_kv, text, flags=re.IGNORECASE)
+
+    return _apply_patterns(text, vault, value_to_token)
 
 def _redact_blocks(blocks: list[dict], vault: dict, value_to_token: dict) -> list[dict]:
     out = []
