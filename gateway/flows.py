@@ -378,6 +378,7 @@ async def _handle_approve(nr, diag, approve_line, session_id, account_uuid, *, b
         draft, session_id=session_id, user_id=bus_id.user_id,
         department=bus_id.department, team=bus_id.team,
         visibility=visibility, flags=flags,
+        agent_id="claude-code",
     )
     key = pending.idempotency_key(session_id, payload)
 

@@ -22,8 +22,8 @@ const NAV = [
 
 export default function App() {
   const [tab, setTab] = useState('home');
-  const [passports, setPassports] = useState([]);
-  const [drafts, setDrafts] = useState([]);
+  const [passports, setPassports] = useState(PASSPORTS);
+  const [drafts, setDrafts] = useState(DRAFTS);
   const [hiddenDraftIds, setHiddenDraftIds] = useState(new Set());
   const [toast, setToast] = useState('');
   const timer = useRef(null);
@@ -66,18 +66,18 @@ export default function App() {
           const all = [...mappedApproved];
           const unique = [];
           const seen = new Set();
+          // Put mappedApproved at the top
           for (const p of all) {
             if (!seen.has(p.id)) {
               seen.add(p.id);
               unique.push(p);
             }
           }
-          // Include any passports that were just approved locally in this session
-          // and might not be in the backend's approved list yet
+          // Then append any existing passports (including mock data) that weren't in mappedApproved
           for (const p of prevPassports) {
             if (!seen.has(p.id)) {
               seen.add(p.id);
-              unique.unshift(p);
+              unique.push(p);
             }
           }
           return unique;
