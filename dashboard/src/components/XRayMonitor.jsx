@@ -34,15 +34,19 @@ const extractImportantParts = (messages) => {
   let prompt = '';
   let injection = '';
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-  if (lastUserMsg && Array.isArray(lastUserMsg.content)) {
-    const textBlocks = lastUserMsg.content.filter(b => b.type === 'text');
-    for (let i = textBlocks.length - 1; i >= 0; i--) {
-      let text = textBlocks[i].text || '';
-      if (text.includes('**Automated Instruction:**') || text.includes('<system-reminder>')) {
-        injection = text;
-      } else if (!text.includes('SUGGESTION MODE:') && !prompt) {
-        prompt = text;
+  if (lastUserMsg) {
+    if (Array.isArray(lastUserMsg.content)) {
+      const textBlocks = lastUserMsg.content.filter(b => b.type === 'text');
+      for (let i = textBlocks.length - 1; i >= 0; i--) {
+        let text = textBlocks[i].text || '';
+        if (text.includes('**Automated Instruction:**') || text.includes('<system-reminder>')) {
+          injection = text;
+        } else if (!text.includes('SUGGESTION MODE:') && !prompt) {
+          prompt = text;
+        }
       }
+    } else if (typeof lastUserMsg.content === 'string') {
+      prompt = lastUserMsg.content;
     }
   }
   const systemMsgs = messages.filter(m => m.role === 'system');
