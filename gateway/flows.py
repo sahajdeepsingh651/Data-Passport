@@ -79,10 +79,8 @@ _failed_drafts: dict[str, str] = {} # pending_id -> failure_reason
 _failed_drafts_lock = threading.Lock()
 
 def _log(msg: str) -> None:
-    print(f"[FLOW] {msg}", flush=True)
     with _log_lock:
-        with open("/tmp/dp_debug.log", "a") as f:
-            f.write(f"[FLOW] {msg}\n")
+        print(f"[FLOW] {msg}", flush=True)
 
 
 def _scan_into_vault(text: str, vault: dict) -> str:
