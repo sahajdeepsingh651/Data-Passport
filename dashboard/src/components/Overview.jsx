@@ -32,10 +32,10 @@ export default function Overview({ go, passportCount, draftCount }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <span style={{ ...kicker, alignSelf: 'flex-start' }}>What this is</span>
           <h2 style={{ margin: 0, fontSize: 30, lineHeight: 1.2, letterSpacing: '-0.03em', fontWeight: 700, textWrap: 'pretty' }}>
-            A checkpoint between your developers' AI tools and the model.
+            A checkpoint between your developers' AI tools and the model — and the engine that builds your Orgbrain.
           </h2>
           <p style={{ margin: 0, fontSize: 15.5, lineHeight: 1.65, color: '#4A4458', maxWidth: '58ch', textWrap: 'pretty' }}>
-            Every request an AI coding tool sends is inspected on the way out. Secrets and personal data are removed before the model sees them, useful answers are kept for the rest of the company, and nothing is stored without a person approving it.
+            Every request an AI coding tool sends is inspected on the way out. Secrets and personal data are removed before the model sees them. Useful answers are captured, approved, and added to the <strong style={{ color: '#6D28D9' }}>Orgbrain</strong> — your organization's shared brain — so the next person with the same problem never has to solve it twice.
           </p>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
             <button className="ob-btn-primary" onClick={() => go('xray')} style={{ cursor: 'pointer', font: 'inherit', border: 'none', background: '#6D28D9', color: '#fff', fontSize: 14, fontWeight: 600, padding: '11px 20px', borderRadius: 10, boxShadow: '0 4px 12px rgba(109,40,217,0.25)' }}>

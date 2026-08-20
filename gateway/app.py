@@ -148,7 +148,7 @@ def log_usage(*, model: str | None, injected: bool, usage: dict) -> None:
         "arm_label": os.environ.get("DP_ARM_LABEL", ""),
         "usage": usage,
     }
-    with open(USAGE_LOG_PATH, "a") as f:
+    with open(USAGE_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 
@@ -209,10 +209,6 @@ def _apply_write(nr, normalized_resp, vault: dict) -> None:
     """Response side of G6: capture the model's draft into the pending
     store. This NEVER writes to the Context Bus — approval does, and only
     a human can trigger that."""
-    print(f"DEBUG_TEXT length: {len(normalized_resp.text or '')}, text: {normalized_resp.text!r}", flush=True)
-    with open("/tmp/dp_debug_text.log", "a") as f:
-        f.write(f"TEXT: {normalized_resp.text!r}\n")
-    
     result = flows.handle_write_response(nr, normalized_resp, vault)
     msg = ""
     if result.get("captured"):
@@ -222,8 +218,6 @@ def _apply_write(nr, normalized_resp, vault: dict) -> None:
     
     if msg:
         print(msg, flush=True)
-        with open("/tmp/dp_debug.log", "a") as f:
-            f.write(msg + "\n")
 
 
 async def _restore_sse_stream(raw_chunks, vault: dict):
@@ -459,7 +453,7 @@ async def dashboard_pending():
     if PENDING_DIR.exists():
         for p in PENDING_DIR.glob("*.json"):
             try:
-                with open(p) as f:
+                with open(p, encoding="utf-8") as f:
                     draft = json.load(f)
                     if draft.get("status") == "pending_approval":
                         drafts.append(draft)
