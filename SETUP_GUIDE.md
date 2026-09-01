@@ -1,4 +1,4 @@
-# Data Passport: Complete Setup Guide
+# OrgBrain: Complete Setup Guide
 
 This guide covers how to set up both the **Interceptor Gateway** (which runs on the developer's laptop) and the **Context Bus** (which represents the shared VM).
 
@@ -29,7 +29,7 @@ cp .env.example .env
 docker compose up --build -d
 cd ..
 ```
-*(This starts both `data-passport-postgres` and `data-passport-backend` on port 8000).*
+*(This starts both `OrgBrain-postgres` and `OrgBrain-backend` on port 8000).*
 
 ---
 
